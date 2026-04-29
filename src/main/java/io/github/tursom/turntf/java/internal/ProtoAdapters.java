@@ -27,6 +27,13 @@ import java.util.List;
 import notifier.client.v1.Client;
 import com.google.protobuf.ByteString;
 
+/**
+ * Converts generated protobuf messages into the SDK's public Java model and back.
+ *
+ * <p>The adapters intentionally absorb wire-level quirks such as absent nested messages, signed
+ * JVM longs standing in for unsigned protobuf identifiers, and enum values that may drift over
+ * time.
+ */
 public final class ProtoAdapters {
     private ProtoAdapters() {
     }
@@ -37,6 +44,9 @@ public final class ProtoAdapters {
 
     public static UserRef fromProto(Client.UserRef input) {
         if (input == null) {
+            // Zero refs are used throughout the client as a sentinel for "field absent on the
+            // wire" so downstream code can stay null-free even when proto optional messages are
+            // omitted.
             return new UserRef(0, 0);
         }
         return new UserRef(input.getNodeId(), input.getUserId());
@@ -51,6 +61,8 @@ public final class ProtoAdapters {
 
     public static SessionRef fromProto(Client.SessionRef input) {
         if (input == null) {
+            // Session targeting is optional for transient packets; preserve that distinction with a
+            // stable zero-valued SessionRef instead of leaking null checks into call sites.
             return new SessionRef(0, "");
         }
         return new SessionRef(input.getServingNodeId(), input.getSessionId());
@@ -100,6 +112,8 @@ public final class ProtoAdapters {
 
     public static Packet fromProto(Client.Packet input) {
         return new Packet(
+            // packet_id is the only stable identifier a transient sender gets back, so reject
+            // negative values early instead of letting them disappear into application logs.
             Validation.requireUnsigned(input.getPacketId(), "packet_id"),
             input.getSourceNodeId(),
             input.getTargetNodeId(),
@@ -126,6 +140,8 @@ public final class ProtoAdapters {
         return switch (mode) {
             case BEST_EFFORT -> Client.ClientDeliveryMode.CLIENT_DELIVERY_MODE_BEST_EFFORT;
             case ROUTE_RETRY -> Client.ClientDeliveryMode.CLIENT_DELIVERY_MODE_ROUTE_RETRY;
+            // UNSPECIFIED is meaningful for persistent messages: the server chooses its default
+            // semantics there, while transient packets must opt into an explicit relay policy.
             default -> Client.ClientDeliveryMode.CLIENT_DELIVERY_MODE_UNSPECIFIED;
         };
     }
@@ -156,6 +172,8 @@ public final class ProtoAdapters {
             case ATTACHMENT_TYPE_CHANNEL_WRITER -> AttachmentType.CHANNEL_WRITER;
             case ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION -> AttachmentType.CHANNEL_SUBSCRIPTION;
             case ATTACHMENT_TYPE_USER_BLACKLIST -> AttachmentType.USER_BLACKLIST;
+            // Preserve unknown/unspecified attachment tags as null so callers can detect protocol
+            // drift instead of silently mapping them onto the wrong local enum.
             default -> null;
         };
     }
@@ -211,6 +229,9 @@ public final class ProtoAdapters {
         }
         List<ResolvedUserSessions.ResolvedSession> sessions = new ArrayList<>();
         for (Client.ResolvedSession item : input.getItemsList()) {
+            // Presence is a node-level summary, while items enumerate concrete sessions. Keeping
+            // both surfaces intact lets callers decide whether they need coarse routing hints or a
+            // direct session address for packet fan-out.
             sessions.add(new ResolvedUserSessions.ResolvedSession(fromProto(item.getSession()), item.getTransport(), item.getTransientCapable()));
         }
         return new ResolvedUserSessions(fromProto(input.getUser()), presence, sessions);
@@ -221,6 +242,10 @@ public final class ProtoAdapters {
         for (Client.PeerStatus peer : input.getPeersList()) {
             List<OperationsStatus.PeerOriginStatus> origins = new ArrayList<>();
             for (Client.PeerOriginStatus origin : peer.getOriginsList()) {
+                // Replication progress is tracked per origin inside each peer because a node can be
+                // fully caught up for one source and still be replaying another. Flattening that
+                // information here would lose the key debugging dimension for snapshot/catch-up
+                // issues.
                 origins.add(new OperationsStatus.PeerOriginStatus(
                     origin.getOriginNodeId(),
                     origin.getAckedEventId(),
@@ -326,6 +351,8 @@ public final class ProtoAdapters {
     }
 
     public static Client.BytesField optionalBytesField(byte[] value) {
+        // Proto patch-style update messages distinguish "field omitted" from "field set to empty
+        // bytes". Returning null for absent inputs preserves that distinction.
         return value == null ? null : Client.BytesField.newBuilder().setValue(ByteString.copyFrom(value)).build();
     }
 }

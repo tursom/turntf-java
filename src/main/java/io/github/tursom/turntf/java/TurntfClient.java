@@ -26,6 +26,13 @@ import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
+/**
+ * Websocket-first high-level turntf client.
+ *
+ * <p>The client owns the full realtime protocol lifecycle: websocket dial, first-frame login,
+ * reconnect with {@code seen_messages}, request/response correlation, ping, persistent message
+ * durability, optional ack emission, and push delivery through {@link ClientListener}.
+ */
 public class TurntfClient {
     private static final String CLOSED_MESSAGE = "turntf client is closed";
     private static final String NOT_CONNECTED_MESSAGE = "turntf client is not connected";
@@ -37,9 +44,14 @@ public class TurntfClient {
     private final OkHttpClient httpClient;
     private final TurntfHttpClient http;
     private final ScheduledExecutorService scheduler;
+    // All in-flight RPCs, including ping, share the same request-id namespace as the protobuf
+    // protocol. A reconnect blows away the whole map because response frames are scoped to a
+    // single websocket session and cannot be safely replayed across sockets.
     private final ConcurrentMap<Long, CompletableFuture<Object>> pending = new ConcurrentHashMap<>();
     private final AtomicLong requestId = new AtomicLong();
     private final AtomicBoolean firstSignal = new AtomicBoolean();
+    // stateLock protects lifecycle transitions that must update socket/auth/loginInfo together.
+    // Individual reads stay volatile so hot paths such as sendEnvelope avoid coarse locking.
     private final Object stateLock = new Object();
 
     private volatile WebSocket webSocket;
@@ -64,18 +76,34 @@ public class TurntfClient {
         return http;
     }
 
+    /**
+     * Returns the current authenticated login snapshot, if the websocket is presently usable.
+     */
     public Optional<LoginInfo> currentLogin() {
         return Optional.ofNullable(loginInfo);
     }
 
+    /**
+     * Delegates to {@link TurntfHttpClient#login(long, long, String)}.
+     */
     public String login(long nodeId, long userId, String password) {
         return http.login(nodeId, userId, password);
     }
 
+    /**
+     * Delegates to {@link TurntfHttpClient#loginWithPassword(long, long, PasswordInput)}.
+     */
     public String loginWithPassword(long nodeId, long userId, PasswordInput password) {
         return http.loginWithPassword(nodeId, userId, password);
     }
 
+    /**
+     * Starts the websocket lifecycle and resolves when the first authenticated session becomes
+     * usable.
+     *
+     * <p>Later reconnects are handled internally by the manager thread and do not require callers
+     * to invoke {@code connect()} again.
+     */
     public CompletableFuture<Void> connect() {
         synchronized (stateLock) {
             if (closed) {
@@ -86,6 +114,9 @@ public class TurntfClient {
             }
             if (managerThread == null || !managerThread.isAlive()) {
                 if (firstConnect.isDone()) {
+                    // Each explicit connect() attempt gets a fresh firstConnect future. After the
+                    // first successful authentication the manager thread may reconnect internally,
+                    // but callers waiting on connect() only care about the first usable session.
                     firstConnect = new CompletableFuture<>();
                     firstSignal.set(false);
                 }
@@ -95,6 +126,9 @@ public class TurntfClient {
         }
     }
 
+    /**
+     * Stops reconnect attempts, closes the current websocket, and fails all pending RPCs.
+     */
     public void close() {
         synchronized (stateLock) {
             if (closed) {
@@ -115,6 +149,9 @@ public class TurntfClient {
         scheduler.shutdownNow();
     }
 
+    /**
+     * Sends an application-level ping over the websocket RPC channel.
+     */
     public CompletableFuture<Void> ping() {
         return rpc(
             requestId -> Client.ClientEnvelope.newBuilder()
@@ -124,6 +161,12 @@ public class TurntfClient {
         );
     }
 
+    /**
+     * Sends a durable message through the websocket API.
+     *
+     * <p>The returned future completes only after the echoed persistent message has been converted
+     * back into the public model and persisted through {@link CursorStore}.
+     */
     public CompletableFuture<Message> sendMessage(SendMessageInput input) {
         Validation.validateUserRef(input.target(), "target");
         if (input.body() == null || input.body().length == 0) {
@@ -148,6 +191,12 @@ public class TurntfClient {
         return sendMessage(input);
     }
 
+    /**
+     * Sends a transient packet through the websocket API.
+     *
+     * <p>If {@code targetSession} is present, the server will attempt to route the packet to that
+     * concrete online session instead of picking any current session for the target user.
+     */
     public CompletableFuture<RelayAccepted> sendPacket(SendPacketInput input) {
         Validation.validateUserRef(input.target(), "target");
         if (input.body() == null || input.body().length == 0) {
@@ -452,6 +501,9 @@ public class TurntfClient {
                     authenticated = false;
                     loginInfo = null;
                 }
+                // Pending RPCs are tied to the websocket that carried their request. Completing
+                // them with a disconnect here prevents callers from waiting until timeout on
+                // responses that can never arrive from a future session.
                 failAllPending(disconnectedError());
                 if (err != null) {
                     listener.onDisconnect(err);
@@ -468,6 +520,8 @@ public class TurntfClient {
                 return;
             }
             listener.onError(err);
+            // Exponential backoff is applied only after a fully failed attempt; a successful login
+            // resets the delay so a later transient blip does not inherit a stale long sleep.
             sleep(delay);
             delay = delay.multipliedBy(2);
             if (delay.compareTo(config.maxReconnectDelay()) > 0) {
@@ -477,6 +531,8 @@ public class TurntfClient {
     }
 
     private void connectAttempt(Attempt attempt) {
+        // Seen cursors are snapshotted before dialing so the login frame represents a stable
+        // replay watermark even if new messages arrive while the socket is coming up.
         List<MessageCursor> seen = new ArrayList<>(cursorStore.loadSeenMessages());
         Request request = new Request.Builder()
             .url(Validation.websocketUrl(config.baseUrl(), config.realtimeStream()))
@@ -508,6 +564,8 @@ public class TurntfClient {
         if (closed || stopReconnect || !config.reconnect()) {
             return false;
         }
+        // Unauthorized is terminal for the current credentials; retrying would just hammer the
+        // server with the same login failure until the process is restarted or reconfigured.
         return !(err instanceof ServerError serverError && serverError.unauthorized()) && !isClosedLike(err);
     }
 
@@ -522,6 +580,8 @@ public class TurntfClient {
         }, config.requestTimeout().toMillis(), TimeUnit.MILLISECONDS);
 
         raw.whenComplete((ignored, err) -> timeout.cancel(false));
+        // Register before sending so a very fast server response cannot win the race and be
+        // dropped as "unknown request". If sendEnvelope fails, we remove the future immediately.
         pending.put(id, raw);
         try {
             sendEnvelope(build.apply(id));
@@ -561,6 +621,8 @@ public class TurntfClient {
     }
 
     private void failAllPending(Throwable error) {
+        // ConcurrentHashMap supports weakly consistent iteration, which is enough here: each
+        // future is idempotently completed exceptionally, then the map is discarded as a batch.
         pending.forEach((id, future) -> future.completeExceptionally(error));
         pending.clear();
     }
@@ -571,11 +633,15 @@ public class TurntfClient {
             if (next > 0) {
                 return next;
             }
+            // The wire protocol expects a positive unsigned-ish request_id. If AtomicLong wraps,
+            // reset and keep searching instead of leaking negative ids into the session.
             requestId.compareAndSet(next, 0);
         }
     }
 
     private void persistMessage(Message message) {
+        // saveMessage first, saveCursor second: once the cursor is durable the next reconnect will
+        // advertise it as seen, so the body must already be recoverable locally.
         cursorStore.saveMessage(message);
         cursorStore.saveCursor(message.cursor());
     }
@@ -687,6 +753,8 @@ public class TurntfClient {
                 .setPassword(config.credentials().password().wireValue())
                 .setTransientOnly(config.transientOnly());
             for (MessageCursor cursor : attempt.seen) {
+                // Re-advertise the locally persisted replay watermark so the server can resume
+                // after the latest durable cursor instead of replaying the whole mailbox.
                 login.addSeenMessages(ProtoAdapters.toProto(cursor));
             }
             envelope.setLogin(login.build());
@@ -707,6 +775,8 @@ public class TurntfClient {
                 return;
             }
             if (!attempt.loginFuture.isDone()) {
+                // The first successful server frame must complete the login handshake; only after
+                // that point is it safe to route request/response traffic through pending RPCs.
                 handleLoginEnvelope(webSocket, env);
                 return;
             }
@@ -739,6 +809,8 @@ public class TurntfClient {
                         TurntfClient.this.authenticated = true;
                         TurntfClient.this.loginInfo = info;
                     }
+                    // Publish authenticated state before completing loginFuture so any caller that
+                    // resumes from connect() can send RPCs immediately on the winning socket.
                     attempt.loginFuture.complete(info);
                     signalFirstConnectSuccess();
                     listener.onLogin(info);
@@ -769,6 +841,9 @@ public class TurntfClient {
                         persistMessage(message);
                         if (config.ackMessages()) {
                             try {
+                                // Ack only after local persistence. Otherwise a crash between ack
+                                // and saveCursor would tell the server not to replay a message the
+                                // client no longer has.
                                 sendEnvelope(Client.ClientEnvelope.newBuilder()
                                     .setAckMessage(Client.AckMessage.newBuilder().setCursor(ProtoAdapters.toProto(message.cursor())).build())
                                     .build());
@@ -787,6 +862,9 @@ public class TurntfClient {
                         switch (env.getSendMessageResponse().getBodyCase()) {
                             case MESSAGE -> {
                                 Message message = ProtoAdapters.fromProto(env.getSendMessageResponse().getMessage());
+                                // Persistent sends echo back the stored message, so record it with
+                                // the same durability guarantees as push delivery. This keeps the
+                                // local cursor store coherent for reconnect suppression.
                                 persistMessage(message);
                                 completePending(requestId, message);
                             }

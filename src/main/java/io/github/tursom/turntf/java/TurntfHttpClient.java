@@ -12,6 +12,13 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 
+/**
+ * Blocking HTTP transport for turntf's management and query endpoints.
+ *
+ * <p>This client keeps the public API byte-oriented even when the REST surface uses embedded JSON
+ * or base64 fields, so callers can move between HTTP and websocket code paths without reshaping
+ * their domain model.
+ */
 public class TurntfHttpClient {
     private static final MediaType JSON = MediaType.get("application/json");
 
@@ -32,10 +39,19 @@ public class TurntfHttpClient {
         return baseUrl;
     }
 
+    /**
+     * Performs HTTP login with a plaintext password that is bcrypt-hashed client-side before
+     * transmission.
+     */
     public String login(long nodeId, long userId, String password) {
         return loginWithPassword(nodeId, userId, PasswordInput.plain(password));
     }
 
+    /**
+     * Performs HTTP login with a prebuilt password payload.
+     *
+     * <p>Callers that already hold a bcrypt hash can use this overload to avoid rehashing.
+     */
     public String loginWithPassword(long nodeId, long userId, PasswordInput password) {
         Validation.requirePositive(nodeId, "nodeId");
         Validation.requirePositive(userId, "userId");
@@ -97,6 +113,8 @@ public class TurntfHttpClient {
             throw new IllegalArgumentException("body is required");
         }
         ObjectNode payload = JsonCodec.object();
+        // Jackson serializes byte[] as base64, matching the HTTP API's JSON representation for
+        // opaque message bodies. The websocket/protobuf client path sends raw bytes instead.
         payload.put("body", body);
         return JsonCodec.message(doJson("POST", "/nodes/%d/users/%d/messages".formatted(target.nodeId(), target.userId()), token, payload, 200, 201));
     }
@@ -113,6 +131,8 @@ public class TurntfHttpClient {
         Validation.validateDeliveryMode(mode);
         ObjectNode payload = JsonCodec.object();
         payload.put("body", body);
+        // HTTP packet relay reuses the message endpoint, so delivery kind/mode have to be encoded
+        // explicitly in JSON instead of relying on the protobuf oneof shape used by TurntfClient.
         payload.put("delivery_kind", "transient");
         payload.put("delivery_mode", mode.wireValue());
         doJson("POST", "/nodes/%d/users/%d/messages".formatted(relayTarget.nodeId(), relayTarget.userId()), token, payload, 202);
@@ -139,10 +159,19 @@ public class TurntfHttpClient {
         return listAttachments(token, owner, AttachmentType.USER_BLACKLIST).stream().map(JsonCodec::blacklistEntry).toList();
     }
 
+    /**
+     * Creates or updates an attachment document through the REST API.
+     *
+     * <p>The public SDK surface accepts raw bytes for {@code configJson}, but the REST transport
+     * requires that JSON to be embedded into the surrounding request body. This method performs
+     * that normalization at the boundary.
+     */
     public Attachment upsertAttachment(String token, UserRef owner, UserRef subject, AttachmentType attachmentType, byte[] configJson) {
         Validation.validateUserRef(owner, "owner");
         Validation.validateUserRef(subject, "subject");
         ObjectNode payload = JsonCodec.object();
+        // The REST API exposes config_json as embedded JSON, not as base64 bytes. Parsing here
+        // keeps HTTP callers aligned with the server's canonical attachment document shape.
         payload.set("config_json", JsonCodec.parseBytesAsJson(configJson));
         return JsonCodec.attachment(doJson(
             "PUT",
@@ -195,6 +224,9 @@ public class TurntfHttpClient {
                 }
             }
             if (!allowed) {
+                // Bubble up the response body verbatim because protocol mismatches are usually
+                // easier to diagnose from the server's JSON error payload than from the status
+                // code alone.
                 String data = response.body() == null ? "" : response.body().string().trim();
                 throw new ProtocolError("unexpected HTTP status " + response.code() + ": " + data);
             }

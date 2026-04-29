@@ -50,6 +50,8 @@ public final class JsonCodec {
             return JsonNodeFactory.instance.objectNode();
         }
         try {
+            // Attachment/user config travels as raw bytes in the Java API but as nested JSON in
+            // the HTTP API. Parsing once here keeps both shapes lossless for structured payloads.
             return MAPPER.readTree(value);
         } catch (IOException e) {
             throw new IllegalArgumentException("invalid json bytes", e);
@@ -104,6 +106,9 @@ public final class JsonCodec {
             profileJson = new byte[0];
         } else if (profile.isContainerNode()) {
             try {
+                // Newer HTTP responses inline profile as an object/array, while older endpoints
+                // may still expose profile_json as a base64 blob. The model keeps bytes so callers
+                // do not have to care which wire shape the server picked.
                 profileJson = MAPPER.writeValueAsBytes(profile);
             } catch (IOException e) {
                 throw new IllegalArgumentException("invalid profile json", e);
@@ -127,6 +132,9 @@ public final class JsonCodec {
     public static Message message(JsonNode node) {
         String createdAt = text(node, "created_at_hlc");
         if (createdAt.isEmpty()) {
+            // Some REST handlers still return wall-clock created_at while the realtime protocol
+            // uses created_at_hlc. Falling back keeps cursor ordering separate from timestamp
+            // presentation without forcing every caller to branch on server version.
             createdAt = text(node, "created_at");
         }
         return new Message(
@@ -143,6 +151,8 @@ public final class JsonCodec {
         return new Attachment(
             userRef(node.path("owner")),
             userRef(node.path("subject")),
+            // HTTP responses use kebab/underscore string tags whereas the Java model exposes an
+            // enum. Normalizing here keeps attachment-specific logic out of higher layers.
             AttachmentType.valueOf(text(node, "attachment_type").toUpperCase().replace('-', '_')),
             bytesValue(node, "config_json"),
             text(node, "attached_at"),
@@ -207,6 +217,8 @@ public final class JsonCodec {
     }
 
     public static List<ClusterNode> clusterNodes(JsonNode node) {
+        // Cluster endpoints are not perfectly uniform: some return a top-level array, others wrap
+        // it in nodes/items. This adapter accepts every known shape so transport code stays dumb.
         JsonNode items = node.isArray() ? node : (node.has("nodes") ? node.path("nodes") : node.path("items"));
         List<ClusterNode> out = new ArrayList<>();
         for (JsonNode item : items) {
