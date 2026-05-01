@@ -132,7 +132,8 @@ public final class JsonCodec {
             boolValue(node, "system_reserved"),
             text(node, "created_at"),
             text(node, "updated_at"),
-            longValue(node, "origin_node_id")
+            longValue(node, "origin_node_id"),
+            text(node, "login_name")
         );
     }
 
@@ -213,7 +214,8 @@ public final class JsonCodec {
         return new LoggedInUser(
             longValue(node, "node_id"),
             longValue(node, "user_id"),
-            text(node, "username")
+            text(node, "username"),
+            text(node, "login_name")
         );
     }
 

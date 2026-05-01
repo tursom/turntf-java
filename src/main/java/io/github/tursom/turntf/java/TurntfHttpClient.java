@@ -50,17 +50,40 @@ public class TurntfHttpClient {
     }
 
     /**
+     * Performs HTTP login with a {@code login_name} selector.
+     *
+     * <p>This is the newer authentication path added alongside the legacy {@code node_id +
+     * user_id} flow. {@code username} is not accepted here because it is display metadata only.
+     */
+    public String login(String loginName, String password) {
+        return loginWithPassword(loginName, PasswordInput.plain(password));
+    }
+
+    /**
      * Performs HTTP login with a prebuilt password payload.
      *
      * <p>Callers that already hold a bcrypt hash can use this overload to avoid rehashing.
      */
     public String loginWithPassword(long nodeId, long userId, PasswordInput password) {
-        Validation.requirePositive(nodeId, "nodeId");
-        Validation.requirePositive(userId, "userId");
+        return loginWithPassword(new Credentials(nodeId, userId, password));
+    }
+
+    /**
+     * Performs HTTP login with a prebuilt password payload and a {@code login_name} selector.
+     */
+    public String loginWithPassword(String loginName, PasswordInput password) {
+        return loginWithPassword(new Credentials(loginName, password));
+    }
+
+    private String loginWithPassword(Credentials credentials) {
         ObjectNode payload = JsonCodec.object();
-        payload.put("node_id", nodeId);
-        payload.put("user_id", userId);
-        payload.put("password", password.wireValue());
+        if (credentials.hasUserSelector()) {
+            payload.put("node_id", credentials.nodeId());
+            payload.put("user_id", credentials.userId());
+        } else {
+            payload.put("login_name", credentials.loginName());
+        }
+        payload.put("password", credentials.password().wireValue());
         JsonNode response = doJson("POST", "/auth/login", "", payload, 200);
         String token = JsonCodec.text(response, "token");
         if (token.isEmpty()) {
@@ -79,6 +102,9 @@ public class TurntfHttpClient {
         ObjectNode payload = JsonCodec.object();
         payload.put("username", request.username());
         payload.put("role", request.role());
+        if (request.loginName() != null) {
+            payload.put("login_name", request.loginName());
+        }
         if (request.password() != null) {
             payload.put("password", request.password().wireValue());
         }
@@ -91,6 +117,7 @@ public class TurntfHttpClient {
     public User createChannel(String token, CreateUserRequest request) {
         return createUser(token, new CreateUserRequest(
             request.username(),
+            request.loginName(),
             request.password(),
             request.profileJson(),
             request.role() == null || request.role().isEmpty() ? "channel" : request.role()

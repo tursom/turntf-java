@@ -44,7 +44,10 @@ TurntfHttpClient http = new TurntfHttpClient("https://turntf.example.com", ok);
 // 方式一：明文密码（自动 bcrypt）
 String token = http.login(4096, 1, "root");
 
-// 方式二：已有 bcrypt 字符串
+// 方式二：login_name + 明文密码（自动 bcrypt）
+String tokenByLoginName = http.login("alice.login", "alice-password");
+
+// 方式三：已有 bcrypt 字符串
 String token = http.loginWithPassword(4096, 1, PasswordInput.hashed("$2a$10$..."));
 ```
 
@@ -55,6 +58,8 @@ String token = http.loginWithPassword(4096, 1, PasswordInput.hashed("$2a$10$..."
 ### 登录注意事项
 
 - `login()` 会在客户端进行 bcrypt 哈希，如果上层系统已经完成了 bcrypt，使用 `PasswordInput.hashed(...)` 避免重复哈希
+- `POST /auth/login` 现在支持两种二选一选择器：`(node_id, user_id)` 或 `login_name`
+- `username` 只是用户展示名，不参与 HTTP 登录
 - 登录 token 的有效期由服务端控制，token 过期后需要重新登录
 - 每次 `login()` 调用都会产生一个新的 token
 
@@ -66,7 +71,7 @@ String token = http.loginWithPassword(4096, 1, PasswordInput.hashed("$2a$10$..."
 
 | Java 方法 | HTTP 端点 | 说明 |
 |-----------|-----------|------|
-| `login()` / `loginWithPassword()` | `POST /auth/login` | 获取认证 token |
+| `login()` / `loginWithPassword()` | `POST /auth/login` | 获取认证 token，支持 `(node_id,user_id)` 或 `login_name` |
 
 ### 用户管理
 

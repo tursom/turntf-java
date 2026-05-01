@@ -116,11 +116,13 @@ import java.nio.charset.StandardCharsets;
 TurntfHttpClient http = new TurntfHttpClient("http://127.0.0.1:8080");
 
 String adminToken = http.login(4096, 1, "root");
+String aliceToken = http.login("alice.login", "alice-password");
 
 var alice = http.createUser(
     adminToken,
     new CreateUserRequest(
         "alice",
+        "alice.login",
         PasswordInput.plain("alice-password"),
         "{\"tier\":\"gold\"}".getBytes(StandardCharsets.UTF_8),
         "user"
@@ -215,6 +217,7 @@ client.close();
 
 使用时有几个容易踩坑的点：
 
+- `login()` 和 `loginWithPassword()` 现在支持两种二选一身份：旧 `(node_id, user_id)` 或新 `login_name`；`username` 不参与认证
 - `login()` 和 `PasswordInput.plain(...)` 会在客户端把明文密码转成 bcrypt；如果你已经拿到 bcrypt 结果，改用 `PasswordInput.hashed(...)`
 - `postMessage()` 和 `postPacket()` 都接受 `byte[] body`，HTTP 侧的 base64 编码由 SDK 处理
 - `upsertAttachment()` 的 `configJson` 必须是合法 JSON 字节串，SDK 会把它嵌入外层请求体，而不是当作 base64 传输
@@ -239,6 +242,7 @@ client.close();
 - `connect()` 只等待“第一个成功完成认证的会话”；之后的断线重连由内部线程自动处理，不需要再次调用 `connect()`
 - 每次重连前都会从 `CursorStore.loadSeenMessages()` 快照本地游标，并放入新的 `LoginRequest.seen_messages`
 - 登录成功后返回的 `LoginInfo` 包含 `protocolVersion` 和 `sessionRef`
+- `CreateUserRequest.loginName` 会映射到用户的认证别名；`UpdateUserRequest.loginName == null` 表示不改，`""` 表示解绑
 - 每个 in-flight RPC 都绑定当前 WebSocket 会话；一旦断线，该连接上的挂起请求会立即失败，而不是一直等到超时
 - `sendMessage()` 返回的是服务端持久化后的 `Message`；SDK 会在 future 完成前先把它写入本地 `CursorStore`
 
@@ -253,7 +257,7 @@ client.close();
 - `baseUrl`
   传 `http://host:port`、`https://host:port`、`ws://...` 或 `wss://...` 都可以；SDK 会自动映射到 `/ws/client`，若 `realtimeStream = true` 则映射到 `/ws/realtime`
 - `credentials`
-  WebSocket 首帧登录使用的 `(node_id, user_id, password)`
+  WebSocket 首帧登录使用的身份，支持旧 `(node_id, user_id, password)` 或新 `(login_name, password)` 二选一
 - `cursorStore`
   本地消息与游标持久化接口；为空时会退回 `MemoryCursorStore`
 - `listener`
@@ -277,11 +281,17 @@ client.close();
 
 ### `Credentials`
 
-`Credentials` 是一个简单 record：
+`Credentials` 支持两种互斥构造方式：
 
 ```java
 new Credentials(nodeId, userId, PasswordInput.plain("alice-password"))
+new Credentials("alice.login", PasswordInput.plain("alice-password"))
 ```
+
+约束是：
+
+- 必须且只能提供一种登录选择器
+- `username` 从头到尾都只是展示字段，不参与认证
 
 密码建议：
 

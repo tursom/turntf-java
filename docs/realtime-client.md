@@ -23,7 +23,8 @@
    - 若 `Config.realtimeStream = true`，则为 `.../ws/realtime`
 4. WebSocket 升级成功后，第一帧必须发送 `ClientEnvelope.login`
 5. 登录帧携带：
-   - `Credentials` 中的 `node_id`、`user_id`、`password`
+   - `Credentials` 中二选一的登录选择器：`(node_id, user_id)` 或 `login_name`
+   - `Credentials` 中的 `password`
    - 本地游标快照 `seen_messages`
    - `Config.transientOnly`
 6. SDK 等待首个服务端帧：
@@ -106,16 +107,16 @@ public record Config(
 
 ## `Credentials` 与 `PasswordInput`
 
-`Credentials` 只保存三件事：
+`Credentials` 保存两部分信息：
 
-- `nodeId`
-- `userId`
+- 一种且仅一种登录选择器：`(nodeId, userId)` 或 `loginName`
 - `password`
 
 其中 `password` 使用 `PasswordInput` 封装：
 
 ```java
 new Credentials(4096, 1025, PasswordInput.plain("alice-password"))
+new Credentials("alice.login", PasswordInput.plain("alice-password"))
 ```
 
 `PasswordInput` 有两种来源：
@@ -128,6 +129,7 @@ new Credentials(4096, 1025, PasswordInput.plain("alice-password"))
 这有两个意义：
 
 - WebSocket 登录和 HTTP 登录可以共用同一套密码封装
+- 登录名模式与旧 ID 模式可以共用同一个 `Credentials` 类型，而不需要切换另一套配置对象
 - 如果你的上层系统已经管理了 bcrypt，不需要再次哈希
 
 ## `CursorStore`

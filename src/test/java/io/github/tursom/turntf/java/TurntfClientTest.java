@@ -15,6 +15,7 @@ import notifier.client.v1.Client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TurntfClientTest {
@@ -177,6 +178,120 @@ class TurntfClientTest {
             client.close();
             assertEquals(1, listener.logins.size());
             assertEquals(1, listener.messages.size());
+        }
+    }
+
+    @Test
+    void loginByLoginNameAndUserApisExposeLoginName() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().withWebSocketUpgrade(new WebSocketListener() {
+                @Override
+                public void onMessage(WebSocket webSocket, okio.ByteString bytes) {
+                    try {
+                        Client.ClientEnvelope env = Client.ClientEnvelope.parseFrom(bytes.toByteArray());
+                        switch (env.getBodyCase()) {
+                            case LOGIN -> {
+                                assertFalse(env.getLogin().hasUser());
+                                assertEquals("alice.login", env.getLogin().getLoginName());
+                                assertTrue(BCrypt.checkpw("alice-password", env.getLogin().getPassword()));
+                                webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                    .setLoginResponse(Client.LoginResponse.newBuilder()
+                                        .setUser(Client.User.newBuilder()
+                                            .setNodeId(4096)
+                                            .setUserId(1025)
+                                            .setUsername("alice")
+                                            .setRole("user")
+                                            .setLoginName("alice.login")
+                                            .build())
+                                        .setProtocolVersion("client-v1alpha1")
+                                        .setSessionRef(Client.SessionRef.newBuilder().setServingNodeId(4096).setSessionId("session-login-name").build())
+                                        .build())
+                                    .build().toByteArray()));
+                            }
+                            case CREATE_USER -> {
+                                assertEquals("bob.login", env.getCreateUser().getLoginName());
+                                assertTrue(BCrypt.checkpw("bob-password", env.getCreateUser().getPassword()));
+                                webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                    .setCreateUserResponse(Client.CreateUserResponse.newBuilder()
+                                        .setRequestId(env.getCreateUser().getRequestId())
+                                        .setUser(Client.User.newBuilder()
+                                            .setNodeId(4096)
+                                            .setUserId(1026)
+                                            .setUsername("bob")
+                                            .setRole("user")
+                                            .setLoginName("bob.login")
+                                            .build())
+                                        .build())
+                                    .build().toByteArray()));
+                            }
+                            case UPDATE_USER -> {
+                                assertTrue(env.getUpdateUser().hasLoginName());
+                                assertEquals("", env.getUpdateUser().getLoginName().getValue());
+                                webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                    .setUpdateUserResponse(Client.UpdateUserResponse.newBuilder()
+                                        .setRequestId(env.getUpdateUser().getRequestId())
+                                        .setUser(Client.User.newBuilder()
+                                            .setNodeId(4096)
+                                            .setUserId(1026)
+                                            .setUsername("bob")
+                                            .setRole("user")
+                                            .build())
+                                        .build())
+                                    .build().toByteArray()));
+                            }
+                            case LIST_NODE_LOGGED_IN_USERS -> {
+                                webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                    .setListNodeLoggedInUsersResponse(Client.ListNodeLoggedInUsersResponse.newBuilder()
+                                        .setRequestId(env.getListNodeLoggedInUsers().getRequestId())
+                                        .addItems(Client.LoggedInUser.newBuilder()
+                                            .setNodeId(4096)
+                                            .setUserId(1025)
+                                            .setUsername("alice")
+                                            .setLoginName("alice.login")
+                                            .build())
+                                        .build())
+                                    .build().toByteArray()));
+                                webSocket.close(1000, "done");
+                            }
+                            default -> {
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }));
+            server.start();
+
+            TurntfClient client = new TurntfClient(new Config(
+                server.url("/").toString(),
+                new Credentials("alice.login", PasswordInput.plain("alice-password"))
+            ));
+
+            client.connect().join();
+            assertEquals("alice.login", client.currentLogin().orElseThrow().user().loginName());
+
+            User created = client.createUser(new CreateUserRequest(
+                "bob",
+                "bob.login",
+                PasswordInput.plain("bob-password"),
+                "{\"tier\":\"gold\"}".getBytes(),
+                "user"
+            )).join();
+            assertEquals("bob.login", created.loginName());
+
+            User updated = client.updateUser(new UserRef(4096, 1026), new UpdateUserRequest(
+                null,
+                "",
+                null,
+                null,
+                null
+            )).join();
+            assertEquals("", updated.loginName());
+
+            List<LoggedInUser> loggedInUsers = client.listNodeLoggedInUsers(4096).join();
+            assertEquals(1, loggedInUsers.size());
+            assertEquals("alice.login", loggedInUsers.get(0).loginName());
+            client.close();
         }
     }
 

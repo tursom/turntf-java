@@ -35,16 +35,30 @@ class TurntfHttpClientTest {
                     String path = request.getPath();
                     if ("/auth/login".equals(path)) {
                         JsonNode body = MAPPER.readTree(request.getBody().readUtf8());
-                        String password = body.path("password").asText();
-                        assertTrue(BCrypt.checkpw("root", password));
+                        if (body.has("login_name")) {
+                            assertEquals("alice.login", body.path("login_name").asText());
+                            assertTrue(body.path("node_id").isMissingNode());
+                            assertTrue(body.path("user_id").isMissingNode());
+                            assertTrue(BCrypt.checkpw("alice-password", body.path("password").asText()));
+                            return json(200, "{\"token\":\"alice-token\"}");
+                        }
+                        assertEquals(4096, body.path("node_id").asLong());
+                        assertEquals(1, body.path("user_id").asLong());
+                        assertTrue(BCrypt.checkpw("root", body.path("password").asText()));
                         return json(200, "{\"token\":\"admin-token\"}");
                     }
                     if ("/users".equals(path)) {
                         assertEquals("Bearer admin-token", request.getHeader("Authorization"));
                         JsonNode body = MAPPER.readTree(request.getBody().readUtf8());
+                        assertEquals("alice.login", body.path("login_name").asText());
                         assertTrue(BCrypt.checkpw("alice-password", body.path("password").asText()));
                         return json(201, """
-                            {"node_id":4096,"user_id":1025,"username":"alice","role":"user","profile":{"tier":"gold"}}
+                            {"node_id":4096,"user_id":1025,"username":"alice","login_name":"alice.login","role":"user","profile":{"tier":"gold"}}
+                            """);
+                    }
+                    if ("/cluster/nodes/4096/logged-in-users".equals(path)) {
+                        return json(200, """
+                            {"items":[{"node_id":4096,"user_id":1025,"username":"alice","login_name":"alice.login"}]}
                             """);
                     }
                     if ("/nodes/4096/users/1025/messages?limit=20".equals(path)) {
@@ -93,15 +107,22 @@ class TurntfHttpClientTest {
             TurntfHttpClient client = new TurntfHttpClient(server.url("/").toString());
             String token = client.login(4096, 1, "root");
             assertEquals("admin-token", token);
+            assertEquals("alice-token", client.login("alice.login", "alice-password"));
 
             User user = client.createUser(token, new CreateUserRequest(
                 "alice",
+                "alice.login",
                 PasswordInput.plain("alice-password"),
                 "{\"tier\":\"gold\"}".getBytes(),
                 "user"
             ));
             assertEquals(4096, user.nodeId());
             assertEquals(1025, user.userId());
+            assertEquals("alice.login", user.loginName());
+
+            List<LoggedInUser> loggedInUsers = client.listNodeLoggedInUsers(token, 4096);
+            assertEquals(1, loggedInUsers.size());
+            assertEquals("alice.login", loggedInUsers.get(0).loginName());
 
             List<Message> items = client.listMessages(token, new UserRef(4096, 1025), 20);
             assertEquals(1, items.size());

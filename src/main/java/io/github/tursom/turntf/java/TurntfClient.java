@@ -91,10 +91,24 @@ public class TurntfClient {
     }
 
     /**
+     * Delegates to {@link TurntfHttpClient#login(String, String)}.
+     */
+    public String login(String loginName, String password) {
+        return http.login(loginName, password);
+    }
+
+    /**
      * Delegates to {@link TurntfHttpClient#loginWithPassword(long, long, PasswordInput)}.
      */
     public String loginWithPassword(long nodeId, long userId, PasswordInput password) {
         return http.loginWithPassword(nodeId, userId, password);
+    }
+
+    /**
+     * Delegates to {@link TurntfHttpClient#loginWithPassword(String, PasswordInput)}.
+     */
+    public String loginWithPassword(String loginName, PasswordInput password) {
+        return http.loginWithPassword(loginName, password);
     }
 
     /**
@@ -236,15 +250,18 @@ public class TurntfClient {
             return CompletableFuture.failedFuture(new IllegalArgumentException("role is required"));
         }
         return rpc(
-            requestId -> Client.ClientEnvelope.newBuilder()
-                .setCreateUser(Client.CreateUserRequest.newBuilder()
+            requestId -> {
+                Client.CreateUserRequest.Builder builder = Client.CreateUserRequest.newBuilder()
                     .setRequestId(requestId)
                     .setUsername(request.username())
                     .setPassword(request.password() == null ? "" : request.password().wireValue())
                     .setProfileJson(com.google.protobuf.ByteString.copyFrom(request.profileJson() == null ? new byte[0] : request.profileJson()))
-                    .setRole(request.role())
-                    .build())
-                .build(),
+                    .setRole(request.role());
+                if (request.loginName() != null) {
+                    builder.setLoginName(request.loginName());
+                }
+                return Client.ClientEnvelope.newBuilder().setCreateUser(builder.build()).build();
+            },
             value -> requireType(value, User.class, "missing user in create_user_response")
         );
     }
@@ -252,6 +269,7 @@ public class TurntfClient {
     public CompletableFuture<User> createChannel(CreateUserRequest request) {
         return createUser(new CreateUserRequest(
             request.username(),
+            request.loginName(),
             request.password(),
             request.profileJson(),
             request.role() == null || request.role().isEmpty() ? "channel" : request.role()
@@ -289,6 +307,11 @@ public class TurntfClient {
                 }
                 if (request.role() != null) {
                     builder.setRole(Client.StringField.newBuilder().setValue(request.role()).build());
+                }
+                if (request.loginName() != null) {
+                    // UpdateUserRequest is patch-like: omitted login_name means "leave unchanged",
+                    // while the empty string means "explicitly unbind the current login name".
+                    builder.setLoginName(Client.StringField.newBuilder().setValue(request.loginName()).build());
                 }
                 return Client.ClientEnvelope.newBuilder().setUpdateUser(builder.build()).build();
             },
@@ -765,8 +788,6 @@ public class TurntfClient {
         if (config.credentials() == null) {
             throw new IllegalArgumentException("credentials are required");
         }
-        Validation.requirePositive(config.credentials().nodeId(), "credentials.nodeId");
-        Validation.requirePositive(config.credentials().userId(), "credentials.userId");
         config.credentials().password().validate();
         return new Config(
             config.baseUrl(),
@@ -840,9 +861,13 @@ public class TurntfClient {
         public void onOpen(WebSocket webSocket, Response response) {
             Client.ClientEnvelope.Builder envelope = Client.ClientEnvelope.newBuilder();
             Client.LoginRequest.Builder login = Client.LoginRequest.newBuilder()
-                .setUser(ProtoAdapters.toProto(new UserRef(config.credentials().nodeId(), config.credentials().userId())))
                 .setPassword(config.credentials().password().wireValue())
                 .setTransientOnly(config.transientOnly());
+            if (config.credentials().hasUserSelector()) {
+                login.setUser(ProtoAdapters.toProto(config.credentials().user()));
+            } else {
+                login.setLoginName(config.credentials().loginName());
+            }
             for (MessageCursor cursor : attempt.seen) {
                 // Re-advertise the locally persisted replay watermark so the server can resume
                 // after the latest durable cursor instead of replaying the whole mailbox.

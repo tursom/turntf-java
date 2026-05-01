@@ -83,7 +83,7 @@ public final class ProtoAdapters {
 
     public static User fromProto(Client.User input) {
         if (input == null) {
-            return new User(0, 0, "", "", new byte[0], false, "", "", 0);
+            return new User(0, 0, "", "", new byte[0], false, "", "", 0, "");
         }
         return new User(
             input.getNodeId(),
@@ -94,7 +94,8 @@ public final class ProtoAdapters {
             input.getSystemReserved(),
             input.getCreatedAt(),
             input.getUpdatedAt(),
-            input.getOriginNodeId()
+            input.getOriginNodeId(),
+            input.getLoginName()
         );
     }
 
@@ -236,7 +237,7 @@ public final class ProtoAdapters {
     }
 
     public static LoggedInUser fromProto(Client.LoggedInUser input) {
-        return new LoggedInUser(input.getNodeId(), input.getUserId(), input.getUsername());
+        return new LoggedInUser(input.getNodeId(), input.getUserId(), input.getUsername(), input.getLoginName());
     }
 
     public static ResolvedUserSessions fromProto(Client.ResolveUserSessionsResponse input) {
