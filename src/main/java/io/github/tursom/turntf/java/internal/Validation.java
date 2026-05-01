@@ -8,6 +8,9 @@ import java.net.URI;
 import java.net.URISyntaxException;
 
 public final class Validation {
+    private static final int USER_METADATA_KEY_MAX_LENGTH = 128;
+    private static final int MAX_USER_METADATA_SCAN_LIMIT = 1000;
+
     private Validation() {
     }
 
@@ -50,6 +53,49 @@ public final class Validation {
 
     public static byte[] copy(byte[] value) {
         return value == null ? new byte[0] : value.clone();
+    }
+
+    public static void validateUserMetadataKey(String key, String field) {
+        validateUserMetadataKeyFragment(key, field, false);
+    }
+
+    public static void validateUserMetadataKeyFragment(String value, String field, boolean allowEmpty) {
+        if (value == null || value.isEmpty()) {
+            if (allowEmpty) {
+                return;
+            }
+            throw new IllegalArgumentException(field + " is required");
+        }
+        if (value.length() > USER_METADATA_KEY_MAX_LENGTH) {
+            throw new IllegalArgumentException(field + " exceeds " + USER_METADATA_KEY_MAX_LENGTH + " characters");
+        }
+        for (int idx = 0; idx < value.length(); idx++) {
+            char ch = value.charAt(idx);
+            boolean allowed = (ch >= 'a' && ch <= 'z')
+                || (ch >= 'A' && ch <= 'Z')
+                || (ch >= '0' && ch <= '9')
+                || ch == '.'
+                || ch == '_'
+                || ch == ':'
+                || ch == '-';
+            if (!allowed) {
+                throw new IllegalArgumentException(field + " contains unsupported character '" + ch + "'");
+            }
+        }
+    }
+
+    public static void validateUserMetadataScan(String prefix, String after, int limit) {
+        validateUserMetadataKeyFragment(prefix, "prefix", true);
+        validateUserMetadataKeyFragment(after, "after", true);
+        if (limit < 0) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        if (limit > MAX_USER_METADATA_SCAN_LIMIT) {
+            throw new IllegalArgumentException("limit cannot exceed " + MAX_USER_METADATA_SCAN_LIMIT);
+        }
+        if (prefix != null && !prefix.isEmpty() && after != null && !after.isEmpty() && !after.startsWith(prefix)) {
+            throw new IllegalArgumentException("after must use the same prefix");
+        }
     }
 
     public static String websocketUrl(String baseUrl, boolean realtime) {

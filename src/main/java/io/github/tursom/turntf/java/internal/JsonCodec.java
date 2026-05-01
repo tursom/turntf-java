@@ -14,6 +14,8 @@ import io.github.tursom.turntf.java.LoggedInUser;
 import io.github.tursom.turntf.java.Message;
 import io.github.tursom.turntf.java.Subscription;
 import io.github.tursom.turntf.java.User;
+import io.github.tursom.turntf.java.UserMetadata;
+import io.github.tursom.turntf.java.UserMetadataScanResult;
 import io.github.tursom.turntf.java.UserRef;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -71,6 +73,11 @@ public final class JsonCodec {
     public static boolean boolValue(JsonNode node, String field) {
         JsonNode value = node.path(field);
         return !value.isMissingNode() && !value.isNull() && value.asBoolean();
+    }
+
+    public static int intValue(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        return value.isMissingNode() || value.isNull() ? 0 : value.asInt();
     }
 
     public static byte[] bytesValue(JsonNode node, String field) {
@@ -161,6 +168,18 @@ public final class JsonCodec {
         );
     }
 
+    public static UserMetadata userMetadata(JsonNode node) {
+        return new UserMetadata(
+            userRef(node.path("owner")),
+            text(node, "key"),
+            bytesValue(node, "value"),
+            text(node, "updated_at"),
+            text(node, "deleted_at"),
+            text(node, "expires_at"),
+            longValue(node, "origin_node_id")
+        );
+    }
+
     public static Subscription subscription(Attachment attachment) {
         return new Subscription(
             attachment.owner(),
@@ -214,6 +233,21 @@ public final class JsonCodec {
             out.add(attachment(item));
         }
         return out;
+    }
+
+    public static List<UserMetadata> userMetadataItems(JsonNode node) {
+        JsonNode items = itemsNode(node, "items");
+        List<UserMetadata> out = new ArrayList<>();
+        for (JsonNode item : items) {
+            out.add(userMetadata(item));
+        }
+        return out;
+    }
+
+    public static UserMetadataScanResult userMetadataScanResult(JsonNode node) {
+        List<UserMetadata> items = userMetadataItems(node);
+        int count = node.isArray() ? items.size() : (node.has("count") ? intValue(node, "count") : items.size());
+        return new UserMetadataScanResult(items, count, text(node, "next_after"));
     }
 
     public static List<ClusterNode> clusterNodes(JsonNode node) {

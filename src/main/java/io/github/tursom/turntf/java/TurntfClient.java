@@ -391,6 +391,97 @@ public class TurntfClient {
             .thenApply(items -> items.stream().map(item -> new BlacklistEntry(item.owner(), item.subject(), item.attachedAt(), item.deletedAt(), item.originNodeId())).toList());
     }
 
+    /**
+     * Reads a single private metadata entry for the given user through the websocket RPC channel.
+     */
+    public CompletableFuture<UserMetadata> getUserMetadata(UserRef owner, String key) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        return rpc(
+            requestId -> Client.ClientEnvelope.newBuilder()
+                .setGetUserMetadata(Client.GetUserMetadataRequest.newBuilder()
+                    .setRequestId(requestId)
+                    .setOwner(ProtoAdapters.toProto(owner))
+                    .setKey(key)
+                    .build())
+                .build(),
+            value -> requireType(value, UserMetadata.class, "missing metadata in get_user_metadata_response")
+        );
+    }
+
+    /**
+     * Creates or replaces a private metadata entry for the given user.
+     *
+     * <p>The protobuf schema carries {@code expires_at} as an optional nested string field so the
+     * client can distinguish between "server chooses default" and an explicit timestamp when the
+     * protocol evolves. Today both HTTP and websocket paths expose that as a nullable string.
+     */
+    public CompletableFuture<UserMetadata> upsertUserMetadata(UserRef owner, String key, byte[] value, String expiresAt) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        return rpc(
+            requestId -> {
+                Client.UpsertUserMetadataRequest.Builder builder = Client.UpsertUserMetadataRequest.newBuilder()
+                    .setRequestId(requestId)
+                    .setOwner(ProtoAdapters.toProto(owner))
+                    .setKey(key)
+                    .setValue(com.google.protobuf.ByteString.copyFrom(value == null ? new byte[0] : value));
+                if (expiresAt != null) {
+                    builder.setExpiresAt(Client.StringField.newBuilder().setValue(expiresAt).build());
+                }
+                return Client.ClientEnvelope.newBuilder().setUpsertUserMetadata(builder.build()).build();
+            },
+            valueObject -> requireType(valueObject, UserMetadata.class, "missing metadata in upsert_user_metadata_response")
+        );
+    }
+
+    /**
+     * Creates or replaces a private metadata entry with no expiration.
+     */
+    public CompletableFuture<UserMetadata> upsertUserMetadata(UserRef owner, String key, byte[] value) {
+        return upsertUserMetadata(owner, key, value, null);
+    }
+
+    /**
+     * Deletes a private metadata entry and returns the tombstone echoed by the server.
+     */
+    public CompletableFuture<UserMetadata> deleteUserMetadata(UserRef owner, String key) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        return rpc(
+            requestId -> Client.ClientEnvelope.newBuilder()
+                .setDeleteUserMetadata(Client.DeleteUserMetadataRequest.newBuilder()
+                    .setRequestId(requestId)
+                    .setOwner(ProtoAdapters.toProto(owner))
+                    .setKey(key)
+                    .build())
+                .build(),
+            value -> requireType(value, UserMetadata.class, "missing metadata in delete_user_metadata_response")
+        );
+    }
+
+    /**
+     * Scans private metadata keys in ascending order.
+     *
+     * <p>{@code limit == 0} keeps the server-side default page size.
+     */
+    public CompletableFuture<UserMetadataScanResult> scanUserMetadata(UserRef owner, String prefix, String after, int limit) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataScan(prefix, after, limit);
+        return rpc(
+            requestId -> Client.ClientEnvelope.newBuilder()
+                .setScanUserMetadata(Client.ScanUserMetadataRequest.newBuilder()
+                    .setRequestId(requestId)
+                    .setOwner(ProtoAdapters.toProto(owner))
+                    .setPrefix(prefix == null ? "" : prefix)
+                    .setAfter(after == null ? "" : after)
+                    .setLimit(limit)
+                    .build())
+                .build(),
+            value -> requireType(value, UserMetadataScanResult.class, "missing scan result in scan_user_metadata_response")
+        );
+    }
+
     @SuppressWarnings("unchecked")
     public CompletableFuture<List<Message>> listMessages(UserRef target, int limit) {
         Validation.validateUserRef(target, "target");
@@ -877,6 +968,10 @@ public class TurntfClient {
                     case GET_USER_RESPONSE -> completePending(Validation.requireUnsigned(env.getGetUserResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getGetUserResponse().getUser()));
                     case UPDATE_USER_RESPONSE -> completePending(Validation.requireUnsigned(env.getUpdateUserResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getUpdateUserResponse().getUser()));
                     case DELETE_USER_RESPONSE -> completePending(Validation.requireUnsigned(env.getDeleteUserResponse().getRequestId(), "request_id"), ProtoAdapters.deleteUserResult(env.getDeleteUserResponse()));
+                    case GET_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getGetUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getGetUserMetadataResponse().getMetadata()));
+                    case UPSERT_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getUpsertUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getUpsertUserMetadataResponse().getMetadata()));
+                    case DELETE_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getDeleteUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getDeleteUserMetadataResponse().getMetadata()));
+                    case SCAN_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getScanUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getScanUserMetadataResponse()));
                     case LIST_MESSAGES_RESPONSE -> completePending(Validation.requireUnsigned(env.getListMessagesResponse().getRequestId(), "request_id"), ProtoAdapters.messages(env.getListMessagesResponse().getItemsList()));
                     case UPSERT_USER_ATTACHMENT_RESPONSE -> completePending(Validation.requireUnsigned(env.getUpsertUserAttachmentResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getUpsertUserAttachmentResponse().getAttachment()));
                     case DELETE_USER_ATTACHMENT_RESPONSE -> completePending(Validation.requireUnsigned(env.getDeleteUserAttachmentResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getDeleteUserAttachmentResponse().getAttachment()));

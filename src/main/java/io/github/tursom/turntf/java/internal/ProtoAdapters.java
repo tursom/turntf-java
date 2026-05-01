@@ -21,6 +21,8 @@ import io.github.tursom.turntf.java.SessionRef;
 import io.github.tursom.turntf.java.Subscription;
 import io.github.tursom.turntf.java.UpdateUserRequest;
 import io.github.tursom.turntf.java.User;
+import io.github.tursom.turntf.java.UserMetadata;
+import io.github.tursom.turntf.java.UserMetadataScanResult;
 import io.github.tursom.turntf.java.UserRef;
 import java.util.ArrayList;
 import java.util.List;
@@ -190,6 +192,21 @@ public final class ProtoAdapters {
         );
     }
 
+    public static UserMetadata fromProto(Client.UserMetadata input) {
+        if (input == null) {
+            return new UserMetadata(new UserRef(0, 0), "", new byte[0], "", "", "", 0);
+        }
+        return new UserMetadata(
+            fromProto(input.getOwner()),
+            input.getKey(),
+            input.getValue().toByteArray(),
+            input.getUpdatedAt(),
+            input.getDeletedAt(),
+            input.getExpiresAt(),
+            input.getOriginNodeId()
+        );
+    }
+
     public static Subscription subscriptionFromProto(Client.Attachment input) {
         Attachment attachment = fromProto(input);
         return new Subscription(attachment.owner(), attachment.subject(), attachment.attachedAt(), attachment.deletedAt(), attachment.originNodeId());
@@ -302,6 +319,14 @@ public final class ProtoAdapters {
         return new DeleteUserResult(input.getStatus(), fromProto(input.getUser()));
     }
 
+    public static UserMetadataScanResult fromProto(Client.ScanUserMetadataResponse input) {
+        return new UserMetadataScanResult(
+            userMetadataItems(input.getItemsList()),
+            input.getCount(),
+            input.getNextAfter()
+        );
+    }
+
     public static List<Message> messages(List<Client.Message> items) {
         List<Message> out = new ArrayList<>();
         for (Client.Message item : items) {
@@ -313,6 +338,14 @@ public final class ProtoAdapters {
     public static List<Attachment> attachments(List<Client.Attachment> items) {
         List<Attachment> out = new ArrayList<>();
         for (Client.Attachment item : items) {
+            out.add(fromProto(item));
+        }
+        return out;
+    }
+
+    public static List<UserMetadata> userMetadataItems(List<Client.UserMetadata> items) {
+        List<UserMetadata> out = new ArrayList<>();
+        for (Client.UserMetadata item : items) {
             out.add(fromProto(item));
         }
         return out;

@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.tursom.turntf.java.internal.JsonCodec;
 import io.github.tursom.turntf.java.internal.Validation;
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -147,6 +149,67 @@ public class TurntfHttpClient {
         return JsonCodec.loggedInUsers(doJson("GET", "/cluster/nodes/%d/logged-in-users".formatted(nodeId), token, null, 200));
     }
 
+    /**
+     * Reads a single private metadata entry for the given user.
+     */
+    public UserMetadata getUserMetadata(String token, UserRef owner, String key) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        return JsonCodec.userMetadata(doJson("GET", metadataPath(owner, key), token, null, 200));
+    }
+
+    /**
+     * Creates or replaces a private metadata entry for the given user.
+     *
+     * <p>The HTTP API represents {@code value} as base64 inside JSON, while the Java surface keeps
+     * it as raw bytes so callers can share the same model with the websocket client.
+     */
+    public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, byte[] value, String expiresAt) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        ObjectNode payload = JsonCodec.object();
+        payload.put("value", value == null ? new byte[0] : value);
+        if (expiresAt != null) {
+            payload.put("expires_at", expiresAt);
+        }
+        return JsonCodec.userMetadata(doJson("PUT", metadataPath(owner, key), token, payload, 200, 201));
+    }
+
+    /**
+     * Creates or replaces a private metadata entry with no expiration.
+     */
+    public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, byte[] value) {
+        return upsertUserMetadata(token, owner, key, value, null);
+    }
+
+    /**
+     * Deletes a private metadata entry and returns the tombstoned record echoed by the server.
+     */
+    public UserMetadata deleteUserMetadata(String token, UserRef owner, String key) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        return JsonCodec.userMetadata(doJson("DELETE", metadataPath(owner, key), token, null, 200));
+    }
+
+    /**
+     * Scans private metadata keys in ascending order.
+     *
+     * <p>{@code prefix} and {@code after} are optional cursor filters. {@code limit == 0} leaves
+     * page sizing up to the server default.
+     */
+    public UserMetadataScanResult scanUserMetadata(String token, UserRef owner, String prefix, String after, int limit) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataScan(prefix, after, limit);
+        StringBuilder path = new StringBuilder("/nodes/%d/users/%d/metadata".formatted(owner.nodeId(), owner.userId()));
+        boolean hasQuery = false;
+        hasQuery = appendQuery(path, hasQuery, "prefix", prefix);
+        hasQuery = appendQuery(path, hasQuery, "after", after);
+        if (limit > 0) {
+            appendQuery(path, hasQuery, "limit", Integer.toString(limit));
+        }
+        return JsonCodec.userMetadataScanResult(doJson("GET", path.toString(), token, null, 200));
+    }
+
     public BlacklistEntry blockUser(String token, UserRef owner, UserRef blocked) {
         return JsonCodec.blacklistEntry(upsertAttachment(token, owner, blocked, AttachmentType.USER_BLACKLIST, "{}".getBytes()));
     }
@@ -234,5 +297,24 @@ public class TurntfHttpClient {
         } catch (IOException e) {
             throw new ConnectionError(method + " " + path, e);
         }
+    }
+
+    private static String metadataPath(UserRef owner, String key) {
+        return "/nodes/%d/users/%d/metadata/%s".formatted(owner.nodeId(), owner.userId(), urlEncode(key));
+    }
+
+    private static boolean appendQuery(StringBuilder path, boolean hasQuery, String name, String value) {
+        if (value == null || value.isEmpty()) {
+            return hasQuery;
+        }
+        path.append(hasQuery ? '&' : '?')
+            .append(name)
+            .append('=')
+            .append(urlEncode(value));
+        return true;
+    }
+
+    private static String urlEncode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 }

@@ -13,6 +13,7 @@ import org.mindrot.jbcrypt.BCrypt;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class TurntfHttpClientTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -58,6 +59,32 @@ class TurntfHttpClientTest {
                             {"recipient":{"node_id":4096,"user_id":1025},"node_id":4096,"seq":4,"sender":{"node_id":4096,"user_id":1},"body":"/wA=","created_at":"hlc2"}
                             """);
                     }
+                    if ("/nodes/4096/users/1025/metadata/prefs.theme".equals(path) && "GET".equals(request.getMethod())) {
+                        return json(200, """
+                            {"owner":{"node_id":4096,"user_id":1025},"key":"prefs.theme","value":"AQID","updated_at":"hlc-meta-1","expires_at":"2026-05-01T00:00:00Z","origin_node_id":4096}
+                            """);
+                    }
+                    if ("/nodes/4096/users/1025/metadata/prefs.theme".equals(path) && "PUT".equals(request.getMethod())) {
+                        JsonNode body = MAPPER.readTree(request.getBody().readUtf8());
+                        assertEquals("AAEC", body.path("value").asText());
+                        assertEquals("2026-05-01T00:00:00Z", body.path("expires_at").asText());
+                        return json(201, """
+                            {"owner":{"node_id":4096,"user_id":1025},"key":"prefs.theme","value":"AAEC","updated_at":"hlc-meta-2","expires_at":"2026-05-01T00:00:00Z","origin_node_id":4096}
+                            """);
+                    }
+                    if ("/nodes/4096/users/1025/metadata/prefs.theme".equals(path) && "DELETE".equals(request.getMethod())) {
+                        return json(200, """
+                            {"owner":{"node_id":4096,"user_id":1025},"key":"prefs.theme","value":"AAEC","updated_at":"hlc-meta-3","deleted_at":"hlc-meta-delete","expires_at":"2026-05-01T00:00:00Z","origin_node_id":4096}
+                            """);
+                    }
+                    if ("/nodes/4096/users/1025/metadata?prefix=prefs.&after=prefs.theme&limit=2".equals(path) && "GET".equals(request.getMethod())) {
+                        return json(200, """
+                            {"items":[
+                              {"owner":{"node_id":4096,"user_id":1025},"key":"prefs.theme","value":"AQID","updated_at":"hlc-meta-1","expires_at":"2026-05-01T00:00:00Z","origin_node_id":4096},
+                              {"owner":{"node_id":4096,"user_id":1025},"key":"prefs.volume","value":"BAU=","updated_at":"hlc-meta-4","origin_node_id":4096}
+                            ],"count":2,"next_after":"prefs.volume"}
+                            """);
+                    }
                     return new MockResponse().setResponseCode(404);
                 }
             });
@@ -82,6 +109,25 @@ class TurntfHttpClientTest {
 
             Message created = client.postMessage(token, new UserRef(4096, 1025), new byte[]{(byte) 0xff, 0x00});
             assertEquals(4, created.seq());
+
+            UserMetadata metadata = client.getUserMetadata(token, new UserRef(4096, 1025), "prefs.theme");
+            assertArrayEquals(new byte[]{1, 2, 3}, metadata.value());
+            assertEquals("2026-05-01T00:00:00Z", metadata.expiresAt());
+
+            UserMetadata upserted = client.upsertUserMetadata(token, new UserRef(4096, 1025), "prefs.theme", new byte[]{0, 1, 2}, "2026-05-01T00:00:00Z");
+            assertArrayEquals(new byte[]{0, 1, 2}, upserted.value());
+            assertEquals("hlc-meta-2", upserted.updatedAt());
+
+            UserMetadata deleted = client.deleteUserMetadata(token, new UserRef(4096, 1025), "prefs.theme");
+            assertEquals("hlc-meta-delete", deleted.deletedAt());
+
+            UserMetadataScanResult scan = client.scanUserMetadata(token, new UserRef(4096, 1025), "prefs.", "prefs.theme", 2);
+            assertEquals(2, scan.count());
+            assertEquals("prefs.volume", scan.nextAfter());
+            assertArrayEquals(new byte[]{4, 5}, scan.items().get(1).value());
+
+            assertThrows(IllegalArgumentException.class, () -> client.getUserMetadata(token, new UserRef(4096, 1025), "bad key"));
+            assertThrows(IllegalArgumentException.class, () -> client.scanUserMetadata(token, new UserRef(4096, 1025), "prefs.", "other.key", 2));
         }
     }
 
