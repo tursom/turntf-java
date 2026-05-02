@@ -15,11 +15,20 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 
 /**
- * Blocking HTTP transport for turntf's management and query endpoints.
- *
- * <p>This client keeps the public API byte-oriented even when the REST surface uses embedded JSON
- * or base64 fields, so callers can move between HTTP and websocket code paths without reshaping
- * their domain model.
+ * turntf 管理端点和查询端点的阻塞式 HTTP 传输客户端。
+ * <p>
+ * 该客户端通过 HTTP REST API 与 turntf 服务器通信，提供用户管理、消息收发、
+ * 附件管理、元数据管理等功能的同步调用接口。
+ * <p>
+ * 即使 REST 接口内部使用 JSON 或 Base64 编码字段，该客户端保持对外 API 面向字节，
+ * 使得调用方可以在 HTTP 和 WebSocket 两种传输路径之间切换，而无需重塑其领域模型。
+ * <p>
+ * <b>使用示例：</b>
+ * <pre>{@code
+ * TurntfHttpClient client = new TurntfHttpClient("http://localhost:8080");
+ * String token = client.login(1, 100, "myPassword");
+ * User user = client.createUser(token, new CreateUserRequest("alice", ...));
+ * }</pre>
  */
 public class TurntfHttpClient {
     private static final MediaType JSON = MediaType.get("application/json");
@@ -27,49 +36,88 @@ public class TurntfHttpClient {
     private final String baseUrl;
     private final OkHttpClient client;
 
+    /**
+     * 使用指定的基础 URL 创建客户端实例。
+     * <p>
+     * 内部会创建一个默认的 {@link OkHttpClient} 实例。
+     *
+     * @param baseUrl 服务器的 HTTP 基础 URL，例如 "http://localhost:8080"
+     */
     public TurntfHttpClient(String baseUrl) {
         this(baseUrl, null);
     }
 
+    /**
+     * 使用指定的基础 URL 和 HTTP 客户端创建实例。
+     * <p>
+     * 允许调用方传入自定义配置的 {@link OkHttpClient}，例如配置超时、代理、TLS 等。
+     *
+     * @param baseUrl 服务器的 HTTP 基础 URL
+     * @param client  自定义的 OkHttpClient 实例；如果为 {@code null} 则创建默认实例
+     */
     public TurntfHttpClient(String baseUrl, OkHttpClient client) {
         Validation.validateBaseUrl(baseUrl);
         this.baseUrl = baseUrl.replaceAll("/+$", "");
         this.client = client == null ? new OkHttpClient() : client;
     }
 
+    /**
+     * 返回客户端的 HTTP 基础 URL。
+     *
+     * @return 基础 URL 字符串，末尾不包含斜杠
+     */
     public String baseUrl() {
         return baseUrl;
     }
 
     /**
-     * Performs HTTP login with a plaintext password that is bcrypt-hashed client-side before
-     * transmission.
+     * 使用明文密码通过 HTTP 登录（旧版 nodeId + userId 方式）。
+     * <p>
+     * 密码会在客户端使用 bcrypt 哈希后再传输。
+     *
+     * @param nodeId   节点标识
+     * @param userId   用户标识
+     * @param password 明文密码
+     * @return 登录成功后的认证令牌（JWT Token）
      */
     public String login(long nodeId, long userId, String password) {
         return loginWithPassword(nodeId, userId, PasswordInput.plain(password));
     }
 
     /**
-     * Performs HTTP login with a {@code login_name} selector.
+     * 使用登录名和明文密码通过 HTTP 登录（新版双轨登录流程）。
+     * <p>
+     * 这是与旧版 {@code nodeId + userId} 流程并存的新认证方式。
+     * 注意此处不支持使用 {@code username}（显示用户名）登录，因为 username 仅为展示性元数据。
      *
-     * <p>This is the newer authentication path added alongside the legacy {@code node_id +
-     * user_id} flow. {@code username} is not accepted here because it is display metadata only.
+     * @param loginName 登录名（在创建用户时指定的认证别名）
+     * @param password  明文密码
+     * @return 登录成功后的认证令牌（JWT Token）
      */
     public String login(String loginName, String password) {
         return loginWithPassword(loginName, PasswordInput.plain(password));
     }
 
     /**
-     * Performs HTTP login with a prebuilt password payload.
+     * 使用预构建的密码输入对象通过 HTTP 登录（旧版 nodeId + userId 方式）。
+     * <p>
+     * 如果调用方已经持有 bcrypt 哈希值，可以使用此重载方法避免重复哈希。
      *
-     * <p>Callers that already hold a bcrypt hash can use this overload to avoid rehashing.
+     * @param nodeId   节点标识
+     * @param userId   用户标识
+     * @param password 密码输入对象（可使用 {@link PasswordInput#plain(String)} 或 {@link PasswordInput#hashed(String)} 创建）
+     * @return 登录成功后的认证令牌（JWT Token）
      */
     public String loginWithPassword(long nodeId, long userId, PasswordInput password) {
         return loginWithPassword(new Credentials(nodeId, userId, password));
     }
 
     /**
-     * Performs HTTP login with a prebuilt password payload and a {@code login_name} selector.
+     * 使用预构建的密码输入对象和登录名通过 HTTP 登录（新版双轨登录流程）。
+     *
+     * @param loginName 登录名
+     * @param password  密码输入对象
+     * @return 登录成功后的认证令牌（JWT Token）
      */
     public String loginWithPassword(String loginName, PasswordInput password) {
         return loginWithPassword(new Credentials(loginName, password));
@@ -92,6 +140,14 @@ public class TurntfHttpClient {
         return token;
     }
 
+    /**
+     * 创建新用户。
+     *
+     * @param token   认证令牌
+     * @param request 创建用户请求参数，包含用户名、角色、可选密码和配置信息
+     * @return 创建成功的用户对象
+     * @throws IllegalArgumentException 如果用户名为空或角色为空
+     */
     public User createUser(String token, CreateUserRequest request) {
         if (request.username() == null || request.username().isEmpty()) {
             throw new IllegalArgumentException("username is required");
@@ -114,6 +170,15 @@ public class TurntfHttpClient {
         return JsonCodec.user(doJson("POST", "/users", token, payload, 200, 201));
     }
 
+    /**
+     * 创建频道（一种特殊类型的用户）。
+     * <p>
+     * 如果请求中未指定角色，则默认使用 "channel" 角色。
+     *
+     * @param token   认证令牌
+     * @param request 创建用户请求参数
+     * @return 创建成功的频道用户对象
+     */
     public User createChannel(String token, CreateUserRequest request) {
         return createUser(token, new CreateUserRequest(
             request.username(),
@@ -124,10 +189,27 @@ public class TurntfHttpClient {
         ));
     }
 
+    /**
+     * 创建用户对频道的订阅关系。
+     * <p>
+     * 此操作会在用户和频道之间创建一个 {@link AttachmentType#CHANNEL_SUBSCRIPTION} 类型的附件。
+     *
+     * @param token   认证令牌
+     * @param user    订阅者用户引用
+     * @param channel 被订阅的频道用户引用
+     */
     public void createSubscription(String token, UserRef user, UserRef channel) {
         upsertAttachment(token, user, channel, AttachmentType.CHANNEL_SUBSCRIPTION, "{}".getBytes());
     }
 
+    /**
+     * 获取指定用户的消息列表。
+     *
+     * @param token  认证令牌
+     * @param target 目标用户引用
+     * @param limit  返回消息的最大数量；如果为 0 或负数则使用服务端默认值
+     * @return 消息列表，按时间顺序排列
+     */
     public List<Message> listMessages(String token, UserRef target, int limit) {
         Validation.validateUserRef(target, "target");
         String path = limit > 0
@@ -136,6 +218,18 @@ public class TurntfHttpClient {
         return JsonCodec.messages(doJson("GET", path, token, null, 200));
     }
 
+    /**
+     * 向目标用户发送消息。
+     * <p>
+     * 消息体以原始字节数组形式提交。Jackson 将 byte[] 序列化为 Base64，
+     * 这与 HTTP API 的 JSON 表示一致。WebSocket/Protobuf 客户端路径则发送原始字节。
+     *
+     * @param token  认证令牌
+     * @param target 目标用户引用
+     * @param body   消息体的原始字节数据
+     * @return 服务器返回的已创建消息对象
+     * @throws IllegalArgumentException 如果消息体为 {@code null} 或空数组
+     */
     public Message postMessage(String token, UserRef target, byte[] body) {
         Validation.validateUserRef(target, "target");
         if (body == null || body.length == 0) {
@@ -148,6 +242,19 @@ public class TurntfHttpClient {
         return JsonCodec.message(doJson("POST", "/nodes/%d/users/%d/messages".formatted(target.nodeId(), target.userId()), token, payload, 200, 201));
     }
 
+    /**
+     * 向目标用户发送数据包（瞬态中继消息）。
+     * <p>
+     * 数据包中继在 HTTP 传输中复用消息端点，因此投递类型和模式需要在 JSON 中显式编码，
+     * 而不是像 {@link TurntfClient} 那样依赖 Protobuf oneof 结构。
+     *
+     * @param token         认证令牌
+     * @param targetNodeId  目标节点标识
+     * @param relayTarget   中继目标用户引用
+     * @param body          数据包体的原始字节数据
+     * @param mode          投递模式（如 DIRECT、RELAY 等）
+     * @throws IllegalArgumentException 如果参数校验失败
+     */
     public void postPacket(String token, long targetNodeId, UserRef relayTarget, byte[] body, DeliveryMode mode) {
         Validation.requirePositive(targetNodeId, "targetNodeId");
         Validation.validateUserRef(relayTarget, "relayTarget");
@@ -167,17 +274,35 @@ public class TurntfHttpClient {
         doJson("POST", "/nodes/%d/users/%d/messages".formatted(relayTarget.nodeId(), relayTarget.userId()), token, payload, 202);
     }
 
+    /**
+     * 获取集群中的所有节点列表。
+     *
+     * @param token 认证令牌
+     * @return 集群节点列表
+     */
     public List<ClusterNode> listClusterNodes(String token) {
         return JsonCodec.clusterNodes(doJson("GET", "/cluster/nodes", token, null, 200));
     }
 
+    /**
+     * 获取指定节点上当前已登录的用户列表。
+     *
+     * @param token  认证令牌
+     * @param nodeId 节点标识
+     * @return 已登录用户列表
+     */
     public List<LoggedInUser> listNodeLoggedInUsers(String token, long nodeId) {
         Validation.requirePositive(nodeId, "nodeId");
         return JsonCodec.loggedInUsers(doJson("GET", "/cluster/nodes/%d/logged-in-users".formatted(nodeId), token, null, 200));
     }
 
     /**
-     * Reads a single private metadata entry for the given user.
+     * 读取指定用户的单条私有元数据条目。
+     *
+     * @param token 认证令牌
+     * @param owner 元数据所属的用户引用
+     * @param key   元数据的键名
+     * @return 元数据条目
      */
     public UserMetadata getUserMetadata(String token, UserRef owner, String key) {
         Validation.validateUserRef(owner, "owner");
@@ -186,10 +311,17 @@ public class TurntfHttpClient {
     }
 
     /**
-     * Creates or replaces a private metadata entry for the given user.
+     * 创建或替换指定用户的私有元数据条目（带过期时间）。
+     * <p>
+     * HTTP API 在 JSON 内部将 {@code value} 表示为 Base64 编码，
+     * 而 Java 接口保持为原始字节，使调用方可以共享与 WebSocket 客户端相同的模型。
      *
-     * <p>The HTTP API represents {@code value} as base64 inside JSON, while the Java surface keeps
-     * it as raw bytes so callers can share the same model with the websocket client.
+     * @param token      认证令牌
+     * @param owner      元数据所属的用户引用
+     * @param key        元数据的键名
+     * @param value      元数据的值（原始字节），如果为 {@code null} 则写入空数组
+     * @param expiresAt  过期时间字符串；如果为 {@code null} 则表示永不过期
+     * @return 创建或更新后的元数据条目
      */
     public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, byte[] value, String expiresAt) {
         Validation.validateUserRef(owner, "owner");
@@ -203,14 +335,27 @@ public class TurntfHttpClient {
     }
 
     /**
-     * Creates or replaces a private metadata entry with no expiration.
+     * 创建或替换指定用户的私有元数据条目（无过期时间）。
+     *
+     * @param token 认证令牌
+     * @param owner 元数据所属的用户引用
+     * @param key   元数据的键名
+     * @param value 元数据的值（原始字节）
+     * @return 创建或更新后的元数据条目
      */
     public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, byte[] value) {
         return upsertUserMetadata(token, owner, key, value, null);
     }
 
     /**
-     * Deletes a private metadata entry and returns the tombstoned record echoed by the server.
+     * 删除指定用户的私有元数据条目。
+     * <p>
+     * 服务器会返回已删除（标记为墓碑）的记录作为回显。
+     *
+     * @param token 认证令牌
+     * @param owner 元数据所属的用户引用
+     * @param key   要删除的元数据键名
+     * @return 已删除的元数据条目（由服务器回显）
      */
     public UserMetadata deleteUserMetadata(String token, UserRef owner, String key) {
         Validation.validateUserRef(owner, "owner");
@@ -219,10 +364,20 @@ public class TurntfHttpClient {
     }
 
     /**
-     * Scans private metadata keys in ascending order.
+     * 按升序遍历用户私有元数据键空间（支持分页）。
+     * <p>
+     * {@code prefix} 和 {@code after} 是可选的游标过滤器。
+     * 当 {@code limit == 0} 时，分页大小由服务器默认值决定。
+     * <p>
+     * 返回结果中的 {@link UserMetadataScanResult#nextAfter()} 值可作为下一次查询的 {@code after} 参数传入，
+     * 以获取下一页数据。
      *
-     * <p>{@code prefix} and {@code after} are optional cursor filters. {@code limit == 0} leaves
-     * page sizing up to the server default.
+     * @param token  认证令牌
+     * @param owner  元数据所属的用户引用
+     * @param prefix 可选的前缀过滤条件，只返回键名以此前缀开头的条目；为 {@code null} 或空则不限制
+     * @param after  可选的游标参数，只返回键名在此之后的条目；为 {@code null} 或空则从头开始
+     * @param limit  每页最大条目数；{@code 0} 表示使用服务器默认值
+     * @return 扫描结果，包含当前页条目和下一页游标
      */
     public UserMetadataScanResult scanUserMetadata(String token, UserRef owner, String prefix, String after, int limit) {
         Validation.validateUserRef(owner, "owner");
@@ -237,24 +392,57 @@ public class TurntfHttpClient {
         return JsonCodec.userMetadataScanResult(doJson("GET", path.toString(), token, null, 200));
     }
 
+    /**
+     * 将指定用户加入黑名单。
+     * <p>
+     * 在用户和黑名单目标之间创建 {@link AttachmentType#USER_BLACKLIST} 类型的附件。
+     *
+     * @param token   认证令牌
+     * @param owner   执行屏蔽操作的用户引用
+     * @param blocked 被屏蔽的用户引用
+     * @return 黑名单条目
+     */
     public BlacklistEntry blockUser(String token, UserRef owner, UserRef blocked) {
         return JsonCodec.blacklistEntry(upsertAttachment(token, owner, blocked, AttachmentType.USER_BLACKLIST, "{}".getBytes()));
     }
 
+    /**
+     * 将指定用户移出黑名单。
+     * <p>
+     * 删除用户和黑名单目标之间的 {@link AttachmentType#USER_BLACKLIST} 类型的附件。
+     *
+     * @param token   认证令牌
+     * @param owner   执行解除屏蔽操作的用户引用
+     * @param blocked 被解除屏蔽的用户引用
+     * @return 已删除的黑名单条目（由服务器回显）
+     */
     public BlacklistEntry unblockUser(String token, UserRef owner, UserRef blocked) {
         return JsonCodec.blacklistEntry(deleteAttachment(token, owner, blocked, AttachmentType.USER_BLACKLIST));
     }
 
+    /**
+     * 获取指定用户的黑名单列表。
+     *
+     * @param token 认证令牌
+     * @param owner 要查询黑名单的用户引用
+     * @return 黑名单条目列表
+     */
     public List<BlacklistEntry> listBlockedUsers(String token, UserRef owner) {
         return listAttachments(token, owner, AttachmentType.USER_BLACKLIST).stream().map(JsonCodec::blacklistEntry).toList();
     }
 
     /**
-     * Creates or updates an attachment document through the REST API.
+     * 创建或更新附件文档。
+     * <p>
+     * 公开 SDK 接口接受原始字节作为 {@code configJson} 参数，
+     * 但 REST 传输要求该 JSON 嵌入到外围的请求体中。此方法在边界处完成该规范化转换。
      *
-     * <p>The public SDK surface accepts raw bytes for {@code configJson}, but the REST transport
-     * requires that JSON to be embedded into the surrounding request body. This method performs
-     * that normalization at the boundary.
+     * @param token          认证令牌
+     * @param owner          附件的所有者用户引用
+     * @param subject        附件关联的目标用户引用
+     * @param attachmentType 附件类型
+     * @param configJson     附件配置数据的 JSON 字节数组（会被解析为 JSON 对象嵌入请求体）
+     * @return 创建或更新后的附件记录
      */
     public Attachment upsertAttachment(String token, UserRef owner, UserRef subject, AttachmentType attachmentType, byte[] configJson) {
         Validation.validateUserRef(owner, "owner");
@@ -273,6 +461,15 @@ public class TurntfHttpClient {
         ));
     }
 
+    /**
+     * 删除附件文档。
+     *
+     * @param token          认证令牌
+     * @param owner          附件的所有者用户引用
+     * @param subject        附件关联的目标用户引用
+     * @param attachmentType 附件类型
+     * @return 已删除的附件记录（由服务器回显）
+     */
     public Attachment deleteAttachment(String token, UserRef owner, UserRef subject, AttachmentType attachmentType) {
         Validation.validateUserRef(owner, "owner");
         Validation.validateUserRef(subject, "subject");
@@ -285,6 +482,14 @@ public class TurntfHttpClient {
         ));
     }
 
+    /**
+     * 获取指定用户的所有附件列表，可按类型过滤。
+     *
+     * @param token          认证令牌
+     * @param owner          附件的所有者用户引用
+     * @param attachmentType 可选的附件类型过滤条件；如果为 {@code null} 则返回所有类型的附件
+     * @return 附件记录列表
+     */
     public List<Attachment> listAttachments(String token, UserRef owner, AttachmentType attachmentType) {
         Validation.validateUserRef(owner, "owner");
         String path = "/nodes/%d/users/%d/attachments".formatted(owner.nodeId(), owner.userId());
@@ -294,6 +499,20 @@ public class TurntfHttpClient {
         return JsonCodec.attachments(doJson("GET", path, token, null, 200));
     }
 
+    /**
+     * 执行 HTTP 请求并解析 JSON 响应。
+     * <p>
+     * 该方法为受保护的（protected），子类可以重写以实现自定义的请求处理逻辑（如请求日志、鉴权扩展等）。
+     *
+     * @param method       HTTP 方法（GET、POST、PUT、DELETE 等）
+     * @param path         请求路径（相对于 baseUrl）
+     * @param token        可选的认证令牌；如果非空会添加 Authorization 头
+     * @param requestBody  可选的请求体 JSON 节点；如果为 {@code null} 则发送无体请求
+     * @param wantStatuses 期望的 HTTP 状态码列表；如果实际状态码不在列表中则抛出 {@link ProtocolError}
+     * @return 解析后的 JSON 响应节点
+     * @throws ProtocolError  如果服务器返回的状态码不在 {@code wantStatuses} 中
+     * @throws ConnectionError 如果网络请求过程中发生 I/O 异常
+     */
     protected JsonNode doJson(String method, String path, String token, JsonNode requestBody, int... wantStatuses) {
         RequestBody body = requestBody == null ? null : RequestBody.create(requestBody.toString(), JSON);
         Request.Builder builder = new Request.Builder().url(baseUrl + path);
