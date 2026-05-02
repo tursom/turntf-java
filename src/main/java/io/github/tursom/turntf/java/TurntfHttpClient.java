@@ -500,7 +500,107 @@ public class TurntfHttpClient {
     }
 
     /**
-     * 执行 HTTP 请求并解析 JSON 响应。
+     * 获取指定用户的详细信息。
+     *
+     * @param token  认证令牌
+     * @param target 目标用户引用
+     * @return 用户详细信息
+     */
+    public User getUser(String token, UserRef target) {
+        Validation.validateUserRef(target, "target");
+        return JsonCodec.user(doJson("GET", "/nodes/%d/users/%d".formatted(target.nodeId(), target.userId()), token, null, 200));
+    }
+
+    /**
+     * 更新用户信息。仅非 {@code null} 的字段会被更新。
+     *
+     * @param token   认证令牌
+     * @param target  目标用户引用
+     * @param request 更新请求，{@code null} 字段表示不修改
+     * @return 更新后的用户信息
+     */
+    public User updateUser(String token, UserRef target, UpdateUserRequest request) {
+        Validation.validateUserRef(target, "target");
+        if ("channel".equals(request.role()) && request.loginName() != null && !request.loginName().isEmpty()) {
+            throw new IllegalArgumentException("channel users cannot have a login_name");
+        }
+        ObjectNode payload = JsonCodec.object();
+        if (request.username() != null) {
+            payload.put("username", request.username());
+        }
+        if (request.loginName() != null) {
+            if (request.loginName().isEmpty()) {
+                payload.put("login_name", "");
+            } else {
+                payload.put("login_name", request.loginName().trim());
+            }
+        }
+        if (request.password() != null) {
+            payload.put("password", request.password().wireValue());
+        }
+        if (request.profileJson() != null && request.profileJson().length > 0) {
+            payload.set("profile", JsonCodec.parseBytesAsJson(request.profileJson()));
+        }
+        if (request.role() != null) {
+            payload.put("role", request.role());
+        }
+        return JsonCodec.user(doJson("PATCH", "/nodes/%d/users/%d".formatted(target.nodeId(), target.userId()), token, payload, 200));
+    }
+
+    /**
+     * 删除指定用户（软删除）。
+     *
+     * @param token  认证令牌
+     * @param target 目标用户引用
+     * @return 删除结果，包含操作状态和被删除用户引用
+     */
+    public DeleteUserResult deleteUser(String token, UserRef target) {
+        Validation.validateUserRef(target, "target");
+        return JsonCodec.deleteUserResult(doJson("DELETE", "/nodes/%d/users/%d".formatted(target.nodeId(), target.userId()), token, null, 200));
+    }
+
+    /**
+     * 查询事件日志，支持分页游标。
+     *
+     * @param token 认证令牌
+     * @param after 起始事件序列号（不含），0 表示从头开始
+     * @param limit 返回事件的最大数量，0 表示使用服务端默认值
+     * @return 事件列表
+     */
+    public List<Event> listEvents(String token, long after, int limit) {
+        StringBuilder path = new StringBuilder("/events");
+        boolean hasQuery = false;
+        if (after > 0) {
+            hasQuery = appendQuery(path, hasQuery, "after", Long.toString(after));
+        }
+        if (limit > 0) {
+            appendQuery(path, hasQuery, "limit", Integer.toString(limit));
+        }
+        return JsonCodec.events(doJson("GET", path.toString(), token, null, 200));
+    }
+
+    /**
+     * 查询节点运行状态，包含消息窗口、写闸门、投影等指标。
+     *
+     * @param token 认证令牌
+     * @return 运行状态信息
+     */
+    public OperationsStatus operationsStatus(String token) {
+        return JsonCodec.operationsStatus(doJson("GET", "/ops/status", token, null, 200));
+    }
+
+    /**
+     * 获取 Prometheus 格式的监控指标文本。
+     *
+     * @param token 认证令牌
+     * @return 监控指标文本（Prometheus 格式）
+     */
+    public String metrics(String token) {
+        return doText("/metrics", token, 200);
+    }
+
+    /**
+     * 执行 HTTP 请求并返回 JSON 响应。
      * <p>
      * 该方法为受保护的（protected），子类可以重写以实现自定义的请求处理逻辑（如请求日志、鉴权扩展等）。
      *
@@ -542,6 +642,33 @@ public class TurntfHttpClient {
             return JsonCodec.read(response.body());
         } catch (IOException e) {
             throw new ConnectionError(method + " " + path, e);
+        }
+    }
+
+    /**
+     * 执行 HTTP GET 请求并返回原始文本响应。
+     */
+    private String doText(String path, String token, int... wantStatuses) {
+        Request.Builder builder = new Request.Builder().url(baseUrl + path);
+        builder.method("GET", null);
+        if (token != null && !token.isEmpty()) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        try (Response response = client.newCall(builder.build()).execute()) {
+            boolean allowed = false;
+            for (int status : wantStatuses) {
+                if (response.code() == status) {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (!allowed) {
+                String data = response.body() == null ? "" : response.body().string().trim();
+                throw new ProtocolError("unexpected HTTP status " + response.code() + ": " + data);
+            }
+            return response.body() == null ? "" : response.body().string();
+        } catch (IOException e) {
+            throw new ConnectionError("GET " + path, e);
         }
     }
 

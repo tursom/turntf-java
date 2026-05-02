@@ -10,8 +10,11 @@ import io.github.tursom.turntf.java.Attachment;
 import io.github.tursom.turntf.java.AttachmentType;
 import io.github.tursom.turntf.java.BlacklistEntry;
 import io.github.tursom.turntf.java.ClusterNode;
+import io.github.tursom.turntf.java.DeleteUserResult;
+import io.github.tursom.turntf.java.Event;
 import io.github.tursom.turntf.java.LoggedInUser;
 import io.github.tursom.turntf.java.Message;
+import io.github.tursom.turntf.java.OperationsStatus;
 import io.github.tursom.turntf.java.Subscription;
 import io.github.tursom.turntf.java.User;
 import io.github.tursom.turntf.java.UserMetadata;
@@ -270,5 +273,104 @@ public final class JsonCodec {
             out.add(loggedInUser(item));
         }
         return out;
+    }
+
+    public static Event event(JsonNode node) {
+        return new Event(
+            longValue(node, "sequence"),
+            longValue(node, "event_id"),
+            text(node, "event_type"),
+            text(node, "aggregate"),
+            longValue(node, "aggregate_node_id"),
+            longValue(node, "aggregate_id"),
+            text(node, "hlc"),
+            longValue(node, "origin_node_id"),
+            bytesValue(node, "event_json")
+        );
+    }
+
+    public static List<Event> events(JsonNode node) {
+        JsonNode items = itemsNode(node, "items");
+        List<Event> out = new ArrayList<>();
+        for (JsonNode item : items) {
+            out.add(event(item));
+        }
+        return out;
+    }
+
+    public static DeleteUserResult deleteUserResult(JsonNode node) {
+        return new DeleteUserResult(
+            text(node, "status"),
+            new UserRef(longValue(node, "node_id"), longValue(node, "user_id"))
+        );
+    }
+
+    public static OperationsStatus operationsStatus(JsonNode node) {
+        List<OperationsStatus.PeerStatus> peers = new ArrayList<>();
+        for (JsonNode peer : node.path("peers")) {
+            List<OperationsStatus.PeerOriginStatus> origins = new ArrayList<>();
+            for (JsonNode origin : peer.path("origins")) {
+                origins.add(new OperationsStatus.PeerOriginStatus(
+                    longValue(origin, "origin_node_id"),
+                    longValue(origin, "acked_event_id"),
+                    longValue(origin, "applied_event_id"),
+                    longValue(origin, "unconfirmed_events"),
+                    text(origin, "cursor_updated_at"),
+                    longValue(origin, "remote_last_event_id"),
+                    boolValue(origin, "pending_catchup")
+                ));
+            }
+            peers.add(new OperationsStatus.PeerStatus(
+                longValue(peer, "node_id"),
+                text(peer, "configured_url"),
+                text(peer, "source"),
+                text(peer, "discovered_url"),
+                text(peer, "discovery_state"),
+                text(peer, "last_discovered_at"),
+                text(peer, "last_connected_at"),
+                text(peer, "last_discovery_error"),
+                boolValue(peer, "connected"),
+                text(peer, "session_direction"),
+                origins,
+                intValue(peer, "pending_snapshot_partitions"),
+                text(peer, "remote_snapshot_version"),
+                intValue(peer, "remote_message_window_size"),
+                longValue(peer, "clock_offset_ms"),
+                text(peer, "last_clock_sync"),
+                longValue(peer, "snapshot_digests_sent_total"),
+                longValue(peer, "snapshot_digests_received_total"),
+                longValue(peer, "snapshot_chunks_sent_total"),
+                longValue(peer, "snapshot_chunks_received_total"),
+                text(peer, "last_snapshot_digest_at"),
+                text(peer, "last_snapshot_chunk_at")
+            ));
+        }
+        JsonNode eventLogTrim = node.path("event_log_trim");
+        OperationsStatus.EventLogTrimStatus eventLogTrimStatus;
+        if (eventLogTrim.isMissingNode() || eventLogTrim.isNull()) {
+            eventLogTrimStatus = new OperationsStatus.EventLogTrimStatus(0L, "");
+        } else {
+            eventLogTrimStatus = new OperationsStatus.EventLogTrimStatus(
+                longValue(eventLogTrim, "trimmed_total"),
+                text(eventLogTrim, "last_trimmed_at")
+            );
+        }
+        return new OperationsStatus(
+            longValue(node, "node_id"),
+            intValue(node, "message_window_size"),
+            longValue(node, "last_event_sequence"),
+            boolValue(node, "write_gate_ready"),
+            longValue(node, "conflict_total"),
+            new OperationsStatus.MessageTrimStatus(
+                longValue(node.path("message_trim"), "trimmed_total"),
+                text(node.path("message_trim"), "last_trimmed_at")
+            ),
+            new OperationsStatus.ProjectionStatus(
+                longValue(node.path("projection"), "pending_total"),
+                text(node.path("projection"), "last_failed_at")
+            ),
+            peers,
+            eventLogTrimStatus
+        );
     }
 }
