@@ -62,6 +62,7 @@ public class TurntfClient {
     private volatile Thread managerThread;
     private volatile ScheduledFuture<?> pingTask;
     private volatile CompletableFuture<Void> firstConnect = new CompletableFuture<>();
+    private volatile Relay relay;
 
     public TurntfClient(Config config) {
         this.config = normalize(config);
@@ -81,6 +82,20 @@ public class TurntfClient {
      */
     public Optional<LoginInfo> currentLogin() {
         return Optional.ofNullable(loginInfo);
+    }
+
+    /**
+     * Returns the relay connection manager (lazily initialized).
+     */
+    public Relay relay() {
+        if (relay == null) {
+            synchronized (this) {
+                if (relay == null) {
+                    relay = new Relay(this);
+                }
+            }
+        }
+        return relay;
     }
 
     /**
@@ -972,7 +987,14 @@ public class TurntfClient {
                         }
                         listener.onMessage(message);
                     }
-                    case PACKET_PUSHED -> listener.onPacket(ProtoAdapters.fromProto(env.getPacketPushed().getPacket()));
+                    case PACKET_PUSHED -> {
+                        Packet packet = ProtoAdapters.fromProto(env.getPacketPushed().getPacket());
+                        if (relay != null && relay.handlePacket(packet)) {
+                            // Handled by relay layer, skip listener
+                        } else {
+                            listener.onPacket(packet);
+                        }
+                    }
                     case SEND_MESSAGE_RESPONSE -> {
                         long requestId = Validation.requireUnsigned(env.getSendMessageResponse().getRequestId(), "request_id");
                         switch (env.getSendMessageResponse().getBodyCase()) {
