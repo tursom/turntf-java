@@ -2,8 +2,8 @@
 
 `turntf-java` 是 turntf 的 Java SDK，面向需要在 JVM 侧接入 turntf 服务的业务代码、后台任务和测试工具。它封装了两类能力：
 
-- 阻塞式 HTTP JSON 管理与查询客户端 `TurntfHttpClient`
-- 基于 WebSocket + Protobuf + `CompletableFuture` 的实时客户端 `TurntfClient`
+- **TurntfHttpClient**：阻塞式 HTTP JSON 管理与查询客户端，适用于脚本、后台任务和管理面
+- **TurntfClient**：基于 WebSocket + Protobuf + `CompletableFuture` 的实时客户端，适用于需要实时推送和自动重连的应用
 
 当前 Java SDK 已覆盖这些核心语义：
 
@@ -11,46 +11,13 @@
 - 自动重连、重登录与 `seen_messages` 去重恢复
 - `session_ref`、`resolveUserSessions()` 与按会话定向的 transient packet
 - `saveMessage -> saveCursor -> ack` 的可靠性顺序
-- 用户、附件、消息、事件、集群运维等 RPC
-
-更细的协议与构建说明见：
-
-- [实时客户端详解](docs/realtime-client.md)
-- [构建、测试与 Proto 同步](docs/build-and-proto.md)
-
-## 模块定位
-
-在这个 monorepo 中：
-
-- `turntf/` 是服务端与协议语义的主参考实现
-- `turntf-java/` 负责把这些共享语义映射成 Java API
-- `proto/client.proto` 是 Java SDK 本地使用的客户端协议定义
-
-Java SDK 的两个入口各有侧重：
-
-- `TurntfHttpClient` 适合脚本、后台任务、管理面和一次性查询；它是阻塞式 API，调用线程会直接等待 HTTP 响应
-- `TurntfClient` 适合需要实时推送、自动重连、消息去重恢复和复用同一条连接执行 RPC 的应用；它的异步返回值统一用 `CompletableFuture`
-
-需要注意的是，两个入口的能力并非完全对等：
-
-- HTTP 客户端目前覆盖登录、创建用户、消息查询/发送、附件与黑名单管理、部分集群查询
-- WebSocket 客户端除 HTTP 登录外，基本承载了更完整的业务 RPC，包括 `resolveUserSessions()`、`operationsStatus()`、`metrics()`、`listEvents()` 等
-- 如果你需要按 `session_ref` 定向投递 transient packet，应优先使用 `TurntfClient`
-
-## 环境要求
-
-- JDK 21
-- 本机可用的 Gradle
-
-仓库当前没有附带 Gradle Wrapper，因此下面的命令都默认使用系统安装的 `gradle`。
+- 用户、附件、消息、事件、元数据、集群运维等 RPC
 
 ## 安装与集成
 
 ### 方式一：在 monorepo 或多模块 Gradle 工程中直接引用源码
 
 如果你的工程和 `turntf-java/` 一起开发，最省心的方式是直接把它作为复合构建或子模块引入。
-
-示例：
 
 ```kotlin
 // settings.gradle.kts
@@ -83,25 +50,14 @@ dependencies {
 
 当前构建脚本启用了 `maven-publish`，但仓库内没有预配置远端发布仓库；外部发布策略通常由上层工程或 CI 决定。
 
-## 常用构建命令
-
-```bash
-gradle clean test
-gradle jar
-gradle generateProto
-gradle publishToMavenLocal
-```
-
-命令与生成产物的细节见 [构建、测试与 Proto 同步](docs/build-and-proto.md)。
-
 ## 快速开始
 
-### 阻塞式 HTTP API
+### TurntfHttpClient（阻塞式 HTTP API）
 
-`TurntfHttpClient` 适合简单管理操作。它会帮你处理：
+`TurntfHttpClient` 适用于简单管理操作。它会自动处理：
 
 - `Authorization: Bearer <token>` 注入
-- `byte[]` 和 HTTP JSON 中 base64 字段的转换
+- `byte[]` 与 HTTP JSON 中 base64 字段的转换
 - 附件 `config_json` 的嵌入式 JSON 编码
 - `PasswordInput.plain(...)` 的客户端 bcrypt 哈希
 
@@ -113,29 +69,33 @@ import io.github.tursom.turntf.java.UserRef;
 
 import java.nio.charset.StandardCharsets;
 
+// 创建客户端（可选的第二个参数为 OkHttpClient）
 TurntfHttpClient http = new TurntfHttpClient("http://127.0.0.1:8080");
 
+// 登录：支持旧版 (nodeId, userId) 和新版 loginName 两种方式
 String adminToken = http.login(4096, 1, "root");
 String aliceToken = http.login("alice.login", "alice-password");
 
-var alice = http.createUser(
-    adminToken,
-    new CreateUserRequest(
-        "alice",
-        "alice.login",
-        PasswordInput.plain("alice-password"),
-        "{\"tier\":\"gold\"}".getBytes(StandardCharsets.UTF_8),
-        "user"
-    )
-);
+// 创建用户
+var alice = http.createUser(adminToken, new CreateUserRequest(
+    "alice",
+    "alice.login",
+    PasswordInput.plain("alice-password"),
+    "{\"tier\":\"gold\"}".getBytes(StandardCharsets.UTF_8),
+    "user"
+));
 
+// 查询用户消息列表
 var inbox = http.listMessages(adminToken, new UserRef(alice.nodeId(), alice.userId()), 20);
-var created = http.postMessage(adminToken, new UserRef(alice.nodeId(), alice.userId()), "hello".getBytes(StandardCharsets.UTF_8));
+
+// 发送消息（body 为原始字节）
+var created = http.postMessage(adminToken, new UserRef(alice.nodeId(), alice.userId()),
+    "hello".getBytes(StandardCharsets.UTF_8));
 ```
 
-### 基于 `CompletableFuture` 的实时客户端
+### TurntfClient（基于 CompletableFuture 的实时客户端）
 
-`TurntfClient` 负责管理 WebSocket 生命周期、登录帧、请求 ID 匹配、定时 ping、消息落盘与自动 ack。
+`TurntfClient` 负责管理 WebSocket 生命周期、登录帧、请求 ID 匹配、定时 ping、消息落盘与自动 ack。所有异步操作均返回 `CompletableFuture`。
 
 ```java
 import io.github.tursom.turntf.java.ClientListener;
@@ -153,133 +113,137 @@ import io.github.tursom.turntf.java.UserRef;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
+// 定义事件监听器
 ClientListener listener = new NopClientListener() {
     @Override
     public void onLogin(LoginInfo info) {
-        System.out.printf(
-            "login ok: protocol=%s session=%d/%s%n",
+        System.out.printf("登录成功: protocol=%s session=%d/%s%n",
             info.protocolVersion(),
             info.sessionRef().servingNodeId(),
-            info.sessionRef().sessionId()
-        );
+            info.sessionRef().sessionId());
     }
 
     @Override
     public void onMessage(Message message) {
-        System.out.printf(
-            "message: recipient=%d:%d seq=%d body=%s%n",
+        System.out.printf("收到消息: recipient=%d:%d seq=%d body=%s%n",
             message.recipient().nodeId(),
             message.recipient().userId(),
             message.seq(),
-            new String(message.body(), StandardCharsets.UTF_8)
-        );
+            new String(message.body(), StandardCharsets.UTF_8));
     }
 };
 
+// 配置实时客户端
 TurntfClient client = new TurntfClient(new Config(
     "http://127.0.0.1:8080",
     new Credentials(4096, 1025, PasswordInput.plain("alice-password")),
     new MemoryCursorStore(),
     listener,
-    null,
-    true,
-    Duration.ofSeconds(1),
-    Duration.ofSeconds(30),
-    Duration.ofSeconds(30),
-    Duration.ofSeconds(10),
-    true,
-    false,
-    false
+    null,            // 复用 OkHttpClient（null 则自建）
+    true,            // 启用自动重连
+    Duration.ofSeconds(1),   // 初始重连延迟
+    Duration.ofSeconds(30),  // 最大重连延迟
+    Duration.ofSeconds(30),  // ping 间隔
+    Duration.ofSeconds(10),  // RPC 超时
+    true,            // 自动 ack
+    false,           // transientOnly
+    false            // realtimeStream
 ));
 
+// 连接（等待首次认证完成）
 client.connect().join();
 
-var sent = client.sendMessage(
-    new SendMessageInput(new UserRef(4096, 1025), "hello".getBytes(StandardCharsets.UTF_8))
-).join();
+// 发送持久消息
+var sent = client.sendMessage(new SendMessageInput(
+    new UserRef(4096, 1025),
+    "hello".getBytes(StandardCharsets.UTF_8)
+)).join();
 
-System.out.println(sent.seq());
+System.out.println("消息发送成功，seq=" + sent.seq());
+
+// 关闭客户端
 client.close();
 ```
 
-## 阻塞式 HTTP API 说明
+`Config` 也提供了一个精简构造器，适用于快速原型：
 
-`TurntfHttpClient` 当前提供这些能力：
+```java
+Config config = new Config(
+    "http://127.0.0.1:8080",
+    new Credentials("alice.login", PasswordInput.plain("alice-password"))
+);
+// 精简构造器默认：重连开启、ping 间隔 30s、RPC 超时 10s、自动 ack 开启
+```
 
-- `login()` / `loginWithPassword()`
-- `createUser()` / `createChannel()`
-- `createSubscription()`
-- `listMessages()` / `postMessage()`
-- `postPacket()`
-- `upsertAttachment()` / `deleteAttachment()` / `listAttachments()`
-- `blockUser()` / `unblockUser()` / `listBlockedUsers()`
-- `listClusterNodes()` / `listNodeLoggedInUsers()`
+## API 概览
 
-使用时有几个容易踩坑的点：
+### TurntfHttpClient（阻塞式）
 
-- `login()` 和 `loginWithPassword()` 现在支持两种二选一身份：旧 `(node_id, user_id)` 或新 `login_name`；`username` 不参与认证
-- `login()` 和 `PasswordInput.plain(...)` 会在客户端把明文密码转成 bcrypt；如果你已经拿到 bcrypt 结果，改用 `PasswordInput.hashed(...)`
-- `postMessage()` 和 `postPacket()` 都接受 `byte[] body`，HTTP 侧的 base64 编码由 SDK 处理
-- `upsertAttachment()` 的 `configJson` 必须是合法 JSON 字节串，SDK 会把它嵌入外层请求体，而不是当作 base64 传输
-- `postPacket()` 只能发一般的 transient packet，不支持 `target_session`
-- 出现非预期 HTTP 状态码时，SDK 会抛出 `ProtocolError`，并尽量带上服务端响应体，便于定位
+| 分类 | 方法 | 说明 |
+|------|------|------|
+| 登录 | `login(long, long, String)` / `login(String, String)` | 旧版 nodeId+userId 或新版 loginName 登录 |
+| 登录 | `loginWithPassword(long, long, PasswordInput)` / `loginWithPassword(String, PasswordInput)` | 支持传入预哈希密码 |
+| 用户管理 | `createUser(String, CreateUserRequest)` / `createChannel(String, CreateUserRequest)` | 创建用户/频道 |
+| 订阅 | `createSubscription(String, UserRef, UserRef)` | 创建用户-频道订阅 |
+| 消息 | `listMessages(String, UserRef, int)` / `postMessage(String, UserRef, byte[])` | 查询/发送消息 |
+| 数据包 | `postPacket(String, long, UserRef, byte[], DeliveryMode)` | 发送瞬态中继包 |
+| 附件 | `upsertAttachment(...)` / `deleteAttachment(...)` / `listAttachments(...)` | 附件 CRUD |
+| 黑名单 | `blockUser(...)` / `unblockUser(...)` / `listBlockedUsers(...)` | 用户黑名单管理 |
+| 元数据 | `getUserMetadata(...)` / `upsertUserMetadata(...)` / `deleteUserMetadata(...)` / `scanUserMetadata(...)` | 用户私有元数据 |
+| 集群 | `listClusterNodes(String)` / `listNodeLoggedInUsers(String, long)` | 集群节点与在线用户查询 |
 
-如果你需要 `resolveUserSessions()`、`metrics()`、`operationsStatus()` 或复用一条连接执行多类 RPC，应切换到 `TurntfClient`。
+### TurntfClient（实时异步）
 
-## 实时客户端说明
+| 分类 | 方法 | 返回类型 |
+|------|------|----------|
+| 生命周期 | `connect()` / `close()` / `currentLogin()` / `ping()` | `CompletableFuture<Void>` / `Optional<LoginInfo>` |
+| 消息收发 | `sendMessage(SendMessageInput)` / `postMessage(SendMessageInput)` | `CompletableFuture<Message>` |
+| 数据包 | `sendPacket(SendPacketInput)` / `sendPacketToSession(...)` | `CompletableFuture<RelayAccepted>` |
+| 用户管理 | `createUser(CreateUserRequest)` / `createChannel(CreateUserRequest)` / `getUser(UserRef)` / `updateUser(UserRef, UpdateUserRequest)` / `deleteUser(UserRef)` | `CompletableFuture<User>` / `CompletableFuture<DeleteUserResult>` |
+| 频道订阅 | `subscribeChannel(...)` / `unsubscribeChannel(...)` / `listSubscriptions(...)` / `createSubscription(...)` | `CompletableFuture<Subscription>` / `CompletableFuture<Void>` |
+| 附件 | `upsertAttachment(...)` / `deleteAttachment(...)` / `listAttachments(...)` | `CompletableFuture<Attachment>` / `CompletableFuture<List<Attachment>>` |
+| 黑名单 | `blockUser(...)` / `unblockUser(...)` / `listBlockedUsers(...)` | `CompletableFuture<BlacklistEntry>` / `CompletableFuture<List<BlacklistEntry>>` |
+| 元数据 | `getUserMetadata(...)` / `upsertUserMetadata(...)` / `deleteUserMetadata(...)` / `scanUserMetadata(...)` | `CompletableFuture<UserMetadata>` / `CompletableFuture<UserMetadataScanResult>` |
+| 消息查询 | `listMessages(UserRef, int)` | `CompletableFuture<List<Message>>` |
+| 事件 | `listEvents(long, int)` | `CompletableFuture<List<Event>>` |
+| 会话解析 | `resolveUserSessions(UserRef)` | `CompletableFuture<ResolvedUserSessions>` |
+| 运维 | `listClusterNodes()` / `listNodeLoggedInUsers(long)` / `operationsStatus()` / `metrics()` | 各类 `CompletableFuture` |
+| HTTP 透传 | `http()` | 返回关联的 `TurntfHttpClient` |
 
-`TurntfClient` 的公共 API 可以分成几组：
+## 选型建议
 
-- 生命周期：`connect()`、`close()`、`currentLogin()`、`ping()`
-- 消息与 packet：`sendMessage()`、`postMessage()`、`sendPacket()`、`sendPacketToSession()`
-- 用户管理：`createUser()`、`createChannel()`、`getUser()`、`updateUser()`、`deleteUser()`
-- 附件与关系：`upsertAttachment()`、`deleteAttachment()`、`listAttachments()`、`subscribeChannel()`、`unsubscribeChannel()`、`blockUser()`、`unblockUser()`
-- 查询与运维：`listMessages()`、`listEvents()`、`listClusterNodes()`、`listNodeLoggedInUsers()`、`resolveUserSessions()`、`operationsStatus()`、`metrics()`
-- HTTP 透传：`http()`、`login()`、`loginWithPassword()`
+| 场景 | 推荐客户端 | 原因 |
+|------|-----------|------|
+| 管理脚本、后台任务、一次性查询 | TurntfHttpClient | 阻塞式 API，调用简单，无需管理连接生命周期 |
+| 需要实时推送的应用 | TurntfClient | WebSocket 长连接，自动重连，消息去重恢复 |
+| 需要 `resolveUserSessions()` 等高级 RPC | TurntfClient | HTTP 客户端不覆盖这些操作 |
+| 多类 RPC 复用一个连接 | TurntfClient | 同一条 WebSocket 连接可执行所有 RPC |
+| 会话定向的 transient packet | TurntfClient | `sendPacketToSession()` 仅在 WebSocket 路径可用 |
 
-几个关键语义：
+需要注意两个入口的能力并非完全对等：
 
-- `connect()` 只等待“第一个成功完成认证的会话”；之后的断线重连由内部线程自动处理，不需要再次调用 `connect()`
-- 每次重连前都会从 `CursorStore.loadSeenMessages()` 快照本地游标，并放入新的 `LoginRequest.seen_messages`
-- 登录成功后返回的 `LoginInfo` 包含 `protocolVersion` 和 `sessionRef`
-- `CreateUserRequest.loginName` 会映射到用户的认证别名；`UpdateUserRequest.loginName == null` 表示不改，`""` 表示解绑
-- 每个 in-flight RPC 都绑定当前 WebSocket 会话；一旦断线，该连接上的挂起请求会立即失败，而不是一直等到超时
-- `sendMessage()` 返回的是服务端持久化后的 `Message`；SDK 会在 future 完成前先把它写入本地 `CursorStore`
+- HTTP 客户端覆盖登录、创建用户、消息查询/发送、附件与黑名单管理、部分集群查询和元数据管理
+- WebSocket 客户端承载了更完整的业务 RPC，包括 `resolveUserSessions()`、`operationsStatus()`、`metrics()`、`listEvents()` 等
+- 如果你需要按 `session_ref` 定向投递 transient packet，应优先使用 `TurntfClient`
 
-详见 [实时客户端详解](docs/realtime-client.md)。
+## 文档导航
 
-## `Config` / `Credentials` / `CursorStore` / `ClientListener`
+- [实时客户端详解](docs/realtime-client.md) -- TurntfClient 生命周期、重连语义、消息可靠性
+- [HTTP 客户端详解](docs/http-client.md) -- TurntfHttpClient 使用细节与注意事项
+- [构建、测试与 Proto 同步](docs/build-and-proto.md) -- 构建命令、Proto 生成与同步流程
+- [开发指南](docs/development.md) -- 开发环境配置与贡献指南
+- [SDK 集成指南](docs/sdk-guide.md) -- 面向 SDK 使用者的集成指引
 
-### `Config`
+### 核心配置理解
 
-`Config` 是实时客户端的运行时配置：
+实时客户端的运行时配置通过 `Config` record 定义。关键的配置项包括：
 
-- `baseUrl`
-  传 `http://host:port`、`https://host:port`、`ws://...` 或 `wss://...` 都可以；SDK 会自动映射到 `/ws/client`，若 `realtimeStream = true` 则映射到 `/ws/realtime`
-- `credentials`
-  WebSocket 首帧登录使用的身份，支持旧 `(node_id, user_id, password)` 或新 `(login_name, password)` 二选一
-- `cursorStore`
-  本地消息与游标持久化接口；为空时会退回 `MemoryCursorStore`
-- `listener`
-  实时事件回调；为空时会退回 `NopClientListener`
-- `httpClient`
-  复用的 OkHttpClient；为空时 SDK 自建
-- `reconnect`
-  是否自动重连
-- `initialReconnectDelay` / `maxReconnectDelay`
-  指数退避范围
-- `pingInterval`
-  应用层 ping 周期
-- `requestTimeout`
-  单个 RPC 超时
-- `ackMessages`
-  是否在本地持久化之后自动发送 `AckMessage`
-- `transientOnly`
-  登录时是否把 `LoginRequest.transient_only` 置为 `true`
-- `realtimeStream`
-  是否改连 `/ws/realtime`
-
-### `Credentials`
+- **`baseUrl`**：服务器地址，支持 `http://`、`https://`、`ws://`、`wss://`；SDK 自动映射到 `/ws/client` 或 `/ws/realtime`
+- **`credentials`**：登录凭据，支持 `(nodeId, userId, password)` 或 `(loginName, password)` 两种方式
+- **`cursorStore`**：本地游标持久化接口，`MemoryCursorStore` 适合 demo 和测试
+- **`listener`**：实时事件回调，通过 `NopClientListener` 选择性实现感兴趣的方法
+- **`reconnect` / `initialReconnectDelay` / `maxReconnectDelay`**：自动重连与指数退避策略
+- **`pingInterval` / `requestTimeout`**：应用层 ping 周期与单次 RPC 超时
 
 `Credentials` 支持两种互斥构造方式：
 
@@ -288,114 +252,78 @@ new Credentials(nodeId, userId, PasswordInput.plain("alice-password"))
 new Credentials("alice.login", PasswordInput.plain("alice-password"))
 ```
 
-约束是：
-
-- 必须且只能提供一种登录选择器
-- `username` 从头到尾都只是展示字段，不参与认证
-
-密码建议：
-
-- 开发环境可直接用 `PasswordInput.plain(...)`
-- 如果上层已经统一完成 bcrypt，可以改用 `PasswordInput.hashed(...)`，避免重复哈希
-
-### `CursorStore`
-
-`CursorStore` 是 Java SDK 与业务持久层的接缝：
+`CursorStore` 接口定义了 SDK 与持久化层的契约：
 
 ```java
 public interface CursorStore {
-    List<MessageCursor> loadSeenMessages();
-    void saveMessage(Message message);
-    void saveCursor(MessageCursor cursor);
+    List<MessageCursor> loadSeenMessages();  // 重连时上报已确认游标
+    void saveMessage(Message message);       // 先保存消息体
+    void saveCursor(MessageCursor cursor);   // 再保存游标
 }
 ```
 
-它的约束非常重要：
+`ClientListener` 提供以下回调：
 
-- `loadSeenMessages()` 返回值会被原样写入下一次登录的 `seen_messages`
-- 返回顺序应稳定，且不要在业务尚未准备好重放前过早丢弃游标
-- `saveMessage()` 必须先于 `saveCursor()` 完成；一旦游标持久化，下一次重连时服务端就会据此跳过重放
-- `MemoryCursorStore` 只适合 demo、测试和短生命周期进程，不适合真实持久化
+- `onLogin(LoginInfo info)` -- 登录成功
+- `onMessage(Message message)` -- 收到新消息（已持久化并 ack）
+- `onPacket(Packet packet)` -- 收到瞬态数据包
+- `onError(Throwable error)` -- 非致命错误
+- `onDisconnect(Throwable error)` -- 连接断开
 
-### `ClientListener`
+### 自动重连、重登录与 session_ref
 
-`ClientListener` 提供这些回调：
+- 初次 `connect()` 成功后，SDK 自动启动定时 ping
+- 断开时清空认证态、失败 pending RPC、触发 `onDisconnect()`；若 `reconnect=true` 且非鉴权错误，则按指数退避自动重连
+- 重连帧携带 `CursorStore.loadSeenMessages()` 快照，服务端跳过已持久化消息
+- `LoginInfo.sessionRef()` 标识当前在线会话，`sendPacketToSession()` 可定向投递
 
-- `onLogin(LoginInfo info)`
-- `onMessage(Message message)`
-- `onPacket(Packet packet)`
-- `onError(Throwable error)`
-- `onDisconnect(Throwable error)`
-
-回调顺序上最关键的一点是：
-
-- `onMessage()` 只有在 SDK 完成 `saveMessage -> saveCursor`，并且在启用自动 ack 时已经尝试发送 `AckMessage` 之后才会触发
-
-因此，业务在 `onMessage()` 里看到的消息，已经经过 SDK 侧的协议处理与本地持久化尝试。
-
-## 自动重连、重登录与 `session_ref`
-
-实时客户端的重连语义如下：
-
-- 初次 `connect()` 成功后，SDK 会启动固定周期的 `ping()`
-- 一旦连接断开，SDK 会清空当前认证态、失败当前连接上的 pending RPC，并触发 `onDisconnect()`
-- 如果 `Config.reconnect = true` 且错误不是 `unauthorized`，SDK 会按指数退避自动重连并重新登录
-- 新的登录帧会带上 `CursorStore.loadSeenMessages()` 的快照，因此服务端可以跳过已持久化消息
-
-`session_ref` 则用于标识“这次登录对应的在线连接”：
-
-- 登录成功后，可从 `LoginInfo.sessionRef()` 读取
-- `currentLogin()` 返回的也是当前已认证会话快照
-- 如果要做会话定向的 transient packet，先调用 `resolveUserSessions()` 拿到对端在线 session，再用 `sendPacketToSession()`
-- 对于可选的 `target_session` 字段，Java SDK 使用零值 `SessionRef(0, "")` 表示“线缆上没有这个字段”，可通过 `isZero()` / `valid()` 判断
-
-## 消息可靠性与 `saveMessage -> saveCursor -> ack`
-
-Java SDK 的可靠性设计和服务端共享协议保持一致：
+### 消息可靠性：saveMessage -> saveCursor -> ack
 
 1. 收到 `MessagePushed`
-2. 先调用 `CursorStore.saveMessage(message)`
-3. 再调用 `CursorStore.saveCursor(message.cursor())`
-4. 如果 `ackMessages = true`，再发送 `AckMessage`
-5. 最后触发 `ClientListener.onMessage(message)`
+2. 调用 `CursorStore.saveMessage(message)` -- 持久化消息体
+3. 调用 `CursorStore.saveCursor(message.cursor())` -- 持久化游标
+4. 若 `ackMessages=true`，发送 `AckMessage`
+5. 触发 `ClientListener.onMessage(message)`
 
-额外注意：
+注意：`AckMessage` 仅为连接内去重提示；真正的可靠恢复依赖重连时上报的 `seen_messages`。
 
-- `AckMessage` 只是连接内的去重提示，不是数据库级确认
-- 可靠重连真正依赖的是下一次登录时重新上报 `seen_messages`
-- transient packet 没有 `(node_id, seq)` 游标，不参与 `saveCursor()`、`seen_messages` 或 `AckMessage`
-- `sendMessage()` 收到 `send_message_response.message` 后，也会按同样的持久化顺序写入本地 store，再完成返回的 future
+### 错误模型
 
-## 错误模型
+| 层级 | 异常类型 | 说明 |
+|------|---------|------|
+| 参数校验 | `IllegalArgumentException` | 空密码、非法 `UserRef`、非法 `DeliveryMode` |
+| 网络传输 | `ConnectionError` | I/O 异常、连接失败 |
+| 协议不匹配 | `ProtocolError` | 非预期 HTTP 状态码、无效 Protobuf 帧 |
+| 业务错误 | `ServerError` | 服务端返回的业务错误（含 `unauthorized()` 判断） |
 
-Java SDK 的错误主要分四层：
+实时 API 需注意：`CompletableFuture.join()` 将异常包装为 `CompletionException`，业务应检查 `getCause()`。连接未就绪或已关闭时，SDK 抛出 `IllegalStateException`。
 
-- 参数校验错误：通常是 `IllegalArgumentException`，例如空密码、非法 `UserRef`、非法 `DeliveryMode`
-- 网络与传输错误：`ConnectionError`
-- 协议不匹配：`ProtocolError`
-- 服务端业务错误：`ServerError`
+## 环境要求
 
-实时 API 还有两点需要特别留意：
+- JDK 21
+- 本机可用的 Gradle
 
-- `CompletableFuture.join()` 会把异常包成 `CompletionException`，业务通常要看 `getCause()`
-- 连接关闭或尚未完成认证时，SDK 会让相关调用以 `IllegalStateException` 失败
+仓库当前没有附带 Gradle Wrapper，因此下面的命令都默认使用系统安装的 `gradle`。
 
-更完整的异常传播路径和排障建议见 [实时客户端详解](docs/realtime-client.md)。
+## 构建与测试
 
-## 测试与 Proto
+```bash
+gradle clean test       # 运行全部测试
+gradle jar              # 构建 JAR
+gradle generateProto    # 从 proto/client.proto 生成 Java 代码
+gradle publishToMavenLocal  # 发布到本地 Maven 仓库
+```
 
-Java SDK 目前有两组核心单测：
+当前有两组核心单测：
 
-- [`TurntfHttpClientTest`](src/test/java/io/github/tursom/turntf/java/TurntfHttpClientTest.java)
-  验证 HTTP 登录、bcrypt 密码编码、`body` base64、附件/消息 JSON 形状
-- [`TurntfClientTest`](src/test/java/io/github/tursom/turntf/java/TurntfClientTest.java)
-  验证实时登录、自动 ack、持久消息发送、ping/pong 与监听器回调
+- [`TurntfHttpClientTest`](src/test/java/io/github/tursom/turntf/java/TurntfHttpClientTest.java) -- 验证 HTTP 登录、bcrypt 密码编码、body base64、附件/消息 JSON 形状、元数据 CRUD
+- [`TurntfClientTest`](src/test/java/io/github/tursom/turntf/java/TurntfClientTest.java) -- 验证实时登录、自动 ack、持久消息发送、ping/pong 与监听器回调
 
 Proto 相关约束：
 
 - 本地协议源文件是 [`proto/client.proto`](proto/client.proto)
-- Gradle protobuf 插件会把生成代码写到 `build/generated/sources/proto/main/java/notifier/client/v1/Client.java`
-- `build/` 已被 `.gitignore` 忽略，因此生成代码属于构建产物，不是手工维护文件
-- 如果你改了 `proto/client.proto`，要同时检查 `TurntfClient`、`TurntfHttpClient`、`internal/ProtoAdapters`、测试和本文档是否都还同步
+- Gradle protobuf 插件把生成代码写到 `build/generated/sources/proto/main/java/notifier/client/v1/Client.java`
+- `build/` 已被 `.gitignore` 忽略，生成代码属于构建产物
+- 修改 `proto/client.proto` 后，需同步检查 `TurntfClient`、`TurntfHttpClient`、`internal/ProtoAdapters`、测试和本文档
 
 更细的构建与同步流程见 [构建、测试与 Proto 同步](docs/build-and-proto.md)。
