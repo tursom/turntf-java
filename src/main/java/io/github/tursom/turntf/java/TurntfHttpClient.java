@@ -204,18 +204,45 @@ public class TurntfHttpClient {
 
     /**
      * 获取指定用户的消息列表。
+     * <p>
+     * 此重载允许 {@code target} 的 nodeId/userId 为 0，表示以当前登录用户身份查询。
      *
      * @param token  认证令牌
-     * @param target 目标用户引用
+     * @param target 目标用户引用（nodeId/userId 可为 0，表示 "当前用户"）
      * @param limit  返回消息的最大数量；如果为 0 或负数则使用服务端默认值
      * @return 消息列表，按时间顺序排列
      */
     public List<Message> listMessages(String token, UserRef target, int limit) {
-        Validation.validateUserRef(target, "target");
-        String path = limit > 0
-            ? "/nodes/%d/users/%d/messages?limit=%d".formatted(target.nodeId(), target.userId(), limit)
-            : "/nodes/%d/users/%d/messages".formatted(target.nodeId(), target.userId());
-        return JsonCodec.messages(doJson("GET", path, token, null, 200));
+        return listMessages(token, target, limit, null, null);
+    }
+
+    /**
+     * 获取指定用户的消息列表，支持按会话对端过滤。
+     * <p>
+     * 当同时提供了 {@code peerNodeId} 和 {@code peerUserId} 时，会在查询字符串中追加
+     * {@code peer_node_id} 和 {@code peer_user_id} 参数，服务端据此过滤出与该对端的会话消息。
+     * <p>
+     * 此方法允许 {@code target} 的 nodeId/userId 为 0，表示以当前登录用户身份查询。
+     *
+     * @param token      认证令牌
+     * @param target     目标用户引用（nodeId/userId 可为 0，表示 "当前用户"）
+     * @param limit      返回消息的最大数量；如果为 0 或负数则使用服务端默认值
+     * @param peerNodeId 可选的会话对端节点标识；与 {@code peerUserId} 同时提供时按会话过滤
+     * @param peerUserId 可选的会话对端用户标识；与 {@code peerNodeId} 同时提供时按会话过滤
+     * @return 消息列表，按时间顺序排列
+     */
+    public List<Message> listMessages(String token, UserRef target, int limit, Long peerNodeId, Long peerUserId) {
+        StringBuilder path = new StringBuilder("/nodes/")
+            .append(target.nodeId()).append("/users/").append(target.userId()).append("/messages");
+        boolean hasQuery = false;
+        if (limit > 0) {
+            hasQuery = appendQuery(path, false, "limit", Integer.toString(limit));
+        }
+        if (peerNodeId != null && peerUserId != null) {
+            hasQuery = appendQuery(path, hasQuery, "peer_node_id", Long.toString(peerNodeId));
+            appendQuery(path, hasQuery, "peer_user_id", Long.toString(peerUserId));
+        }
+        return JsonCodec.messages(doJson("GET", path.toString(), token, null, 200));
     }
 
     /**

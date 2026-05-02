@@ -66,6 +66,11 @@ class TurntfHttpClientTest {
                             {"items":[{"recipient":{"node_id":4096,"user_id":1025},"node_id":4096,"seq":3,"sender":{"node_id":4096,"user_id":1},"body":"/wA=","created_at":"hlc1"}]}
                             """);
                     }
+                    if ("/nodes/0/users/0/messages?peer_node_id=4096&peer_user_id=1025".equals(path)) {
+                        return json(200, """
+                            {"items":[{"recipient":{"node_id":0,"user_id":0},"node_id":0,"seq":5,"sender":{"node_id":4096,"user_id":1025},"body":"/wA=","created_at":"hlc3"}]}
+                            """);
+                    }
                     if ("/nodes/4096/users/1025/messages".equals(path) && "POST".equals(request.getMethod())) {
                         JsonNode body = MAPPER.readTree(request.getBody().readUtf8());
                         assertEquals("/wA=", body.path("body").asText());
@@ -127,6 +132,11 @@ class TurntfHttpClientTest {
             List<Message> items = client.listMessages(token, new UserRef(4096, 1025), 20);
             assertEquals(1, items.size());
             assertArrayEquals(new byte[]{(byte) 0xff, 0x00}, items.get(0).body());
+
+            // peer filter with current-user sentinel (node_id=0, user_id=0)
+            List<Message> peerMessages = client.listMessages(token, new UserRef(0, 0), 0, 4096L, 1025L);
+            assertEquals(1, peerMessages.size());
+            assertEquals(5, peerMessages.get(0).seq());
 
             Message created = client.postMessage(token, new UserRef(4096, 1025), new byte[]{(byte) 0xff, 0x00});
             assertEquals(4, created.seq());
