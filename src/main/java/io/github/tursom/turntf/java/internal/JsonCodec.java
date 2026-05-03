@@ -231,6 +231,15 @@ public final class JsonCodec {
         return out;
     }
 
+    public static List<User> users(JsonNode node) {
+        JsonNode items = itemsNode(node, "items");
+        List<User> out = new ArrayList<>();
+        for (JsonNode item : items) {
+            out.add(user(item));
+        }
+        return out;
+    }
+
     public static List<Attachment> attachments(JsonNode node) {
         JsonNode items = itemsNode(node, "items");
         List<Attachment> out = new ArrayList<>();

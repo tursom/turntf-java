@@ -25,6 +25,33 @@ public final class Validation {
         requirePositive(ref.userId(), field + ".userId");
     }
 
+    public static boolean isZeroUserRef(UserRef ref) {
+        return ref == null || (ref.nodeId() == 0 && ref.userId() == 0);
+    }
+
+    /**
+     * 校验可选的用户过滤器。
+     * <p>
+     * `list_users` 与 `GET /users` 都把全零 UserRef 视为“未设置 uid 过滤”，但半空坐标会被服务端
+     * 视为非法请求。SDK 在本地提前校验，避免把这种模糊状态编码到 HTTP 查询串或 protobuf 消息里。
+     */
+    public static void validateOptionalUserRef(UserRef ref, String field) {
+        if (isZeroUserRef(ref)) {
+            return;
+        }
+        if (ref.nodeId() <= 0 || ref.userId() <= 0) {
+            throw new IllegalArgumentException(field + " must set both nodeId and userId, or both be 0");
+        }
+    }
+
+    public static String encodeUidQuery(UserRef ref, String field) {
+        validateOptionalUserRef(ref, field);
+        if (isZeroUserRef(ref)) {
+            return null;
+        }
+        return ref.nodeId() + ":" + ref.userId();
+    }
+
     public static void validateSessionRef(SessionRef ref, String field) {
         requirePositive(ref.servingNodeId(), field + ".servingNodeId");
         if (ref.sessionId() == null || ref.sessionId().isEmpty()) {

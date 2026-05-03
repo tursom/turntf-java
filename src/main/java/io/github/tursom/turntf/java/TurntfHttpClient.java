@@ -190,6 +190,78 @@ public class TurntfHttpClient {
     }
 
     /**
+     * 获取当前认证用户可通讯的活跃用户集合。
+     * <p>
+     * 该端点不再返回系统全量用户，而是服务端按当前调用者权限、频道关系和黑名单规则筛出的
+     * “可收或可发消息”的用户并集。普通用户查看他人时，结果里的 {@link User#loginName()}
+     * 可能为空字符串，表示服务端已做脱敏。
+     *
+     * @param token 认证令牌；留空时沿用服务端的无鉴权行为
+     * @return 当前用户可通讯的活跃用户列表
+     */
+    public List<User> listUsers(String token) {
+        return listUsers(token, ListUsersFilter.empty());
+    }
+
+    /**
+     * 获取当前认证用户可通讯的活跃用户集合，并按名称过滤。
+     *
+     * @param token 认证令牌
+     * @param name  可选名称过滤，服务端按大小写不敏感子串匹配
+     * @return 过滤后的可通讯用户列表
+     */
+    public List<User> listUsers(String token, String name) {
+        return listUsers(token, new ListUsersFilter(name, null));
+    }
+
+    /**
+     * 获取当前认证用户可通讯的活跃用户集合，并按 uid 精确过滤。
+     * <p>
+     * Java API 继续接受结构化的 {@link UserRef}；HTTP 传输层会在内部把它编码成
+     * {@code node_id:user_id} 查询字符串，因此调用方不需要手工拼接。
+     *
+     * @param token 认证令牌
+     * @param uid   可选 uid 过滤；传 {@code null} 或 {@code new UserRef(0, 0)} 表示不过滤
+     * @return 过滤后的可通讯用户列表
+     */
+    public List<User> listUsers(String token, UserRef uid) {
+        return listUsers(token, new ListUsersFilter(null, uid));
+    }
+
+    /**
+     * 获取当前认证用户可通讯的活跃用户集合，并同时应用名称和 uid 过滤。
+     *
+     * @param token 认证令牌
+     * @param name  可选名称过滤
+     * @param uid   可选 uid 过滤
+     * @return 过滤后的可通讯用户列表
+     */
+    public List<User> listUsers(String token, String name, UserRef uid) {
+        return listUsers(token, new ListUsersFilter(name, uid));
+    }
+
+    /**
+     * 获取当前认证用户可通讯的活跃用户集合，并应用统一过滤对象。
+     * <p>
+     * 同一个 {@link ListUsersFilter} 可以同时复用于 HTTP 与 WebSocket 两条路径，但要注意
+     * HTTP 的 {@code uid} 最终会被编码成 {@code node_id:user_id} 查询字符串，而不是 protobuf
+     * 的嵌套消息。SDK 会在发送前校验半空 uid，避免把歧义参数交给服务端。
+     *
+     * @param token  认证令牌
+     * @param filter 过滤条件；为 {@code null} 时视为无过滤
+     * @return 过滤后的可通讯用户列表
+     * @throws IllegalArgumentException 如果 {@code uid} 只填写了一半
+     */
+    public List<User> listUsers(String token, ListUsersFilter filter) {
+        ListUsersFilter normalized = normalizeListUsersFilter(filter);
+        StringBuilder path = new StringBuilder("/users");
+        boolean hasQuery = false;
+        hasQuery = appendQuery(path, hasQuery, "name", normalizeOptionalQueryValue(normalized.name()));
+        appendQuery(path, hasQuery, "uid", Validation.encodeUidQuery(normalized.uid(), "filter.uid"));
+        return JsonCodec.users(doJson("GET", path.toString(), token, null, 200));
+    }
+
+    /**
      * 创建用户对频道的订阅关系。
      * <p>
      * 此操作会在用户和频道之间创建一个 {@link AttachmentType#CHANNEL_SUBSCRIPTION} 类型的附件。
@@ -701,6 +773,18 @@ public class TurntfHttpClient {
 
     private static String metadataPath(UserRef owner, String key) {
         return "/nodes/%d/users/%d/metadata/%s".formatted(owner.nodeId(), owner.userId(), urlEncode(key));
+    }
+
+    private static ListUsersFilter normalizeListUsersFilter(ListUsersFilter filter) {
+        return filter == null ? ListUsersFilter.empty() : filter;
+    }
+
+    private static String normalizeOptionalQueryValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.isEmpty() ? null : normalized;
     }
 
     private static boolean appendQuery(StringBuilder path, boolean hasQuery, String name, String value) {

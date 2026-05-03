@@ -19,6 +19,72 @@ class TurntfHttpClientTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
+    void listUsersSupportsNameAndUidFilters() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.setDispatcher(new Dispatcher() {
+                @Override
+                public MockResponse dispatch(RecordedRequest request) {
+                    String path = request.getPath();
+                    String method = request.getMethod();
+                    if ("/users".equals(path) && "GET".equals(method)) {
+                        assertEquals("Bearer alice-token", request.getHeader("Authorization"));
+                        return json(200, """
+                            [
+                              {"node_id":4096,"user_id":1025,"username":"alice","login_name":"alice.login","role":"user","profile":{"display_name":"Alice Visible"}},
+                              {"node_id":4096,"user_id":1027,"username":"carol","role":"user","profile":{"display_name":"Carol Visible"}}
+                            ]
+                            """);
+                    }
+                    if ("/users?name=carol".equals(path) && "GET".equals(method)) {
+                        return json(200, """
+                            [
+                              {"node_id":4096,"user_id":1027,"username":"carol","role":"user","profile":{"display_name":"Carol Visible"}}
+                            ]
+                            """);
+                    }
+                    if ("/users?uid=4096%3A1027".equals(path) && "GET".equals(method)) {
+                        return json(200, """
+                            [
+                              {"node_id":4096,"user_id":1027,"username":"carol","role":"user","profile":{"display_name":"Carol Visible"}}
+                            ]
+                            """);
+                    }
+                    if ("/users?name=carol&uid=4096%3A1027".equals(path) && "GET".equals(method)) {
+                        return json(200, """
+                            [
+                              {"node_id":4096,"user_id":1027,"username":"carol","role":"user","profile":{"display_name":"Carol Visible"}}
+                            ]
+                            """);
+                    }
+                    return new MockResponse().setResponseCode(404);
+                }
+            });
+            server.start();
+
+            TurntfHttpClient client = new TurntfHttpClient(server.url("/").toString());
+
+            List<User> all = client.listUsers("alice-token");
+            assertEquals(2, all.size());
+            assertEquals("alice.login", all.get(0).loginName());
+            assertEquals("", all.get(1).loginName());
+
+            List<User> byName = client.listUsers("alice-token", "  carol  ");
+            assertEquals(1, byName.size());
+            assertEquals("carol", byName.get(0).username());
+
+            List<User> byUid = client.listUsers("alice-token", new UserRef(4096, 1027));
+            assertEquals(1, byUid.size());
+            assertEquals(1027, byUid.get(0).userId());
+
+            List<User> combined = client.listUsers("alice-token", "carol", new UserRef(4096, 1027));
+            assertEquals(1, combined.size());
+            assertEquals("carol", combined.get(0).username());
+
+            assertThrows(IllegalArgumentException.class, () -> client.listUsers("alice-token", new UserRef(4096, 0)));
+        }
+    }
+
+    @Test
     void requestsAndEncoding() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
             server.setDispatcher(new Dispatcher() {

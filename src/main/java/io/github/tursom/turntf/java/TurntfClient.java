@@ -347,6 +347,82 @@ public class TurntfClient {
         );
     }
 
+    /**
+     * 查询当前登录用户可通讯的活跃用户集合。
+     * <p>
+     * 该 RPC 对应服务端新增的 {@code list_users} 能力，返回“当前可发或可收消息”的用户并集。
+     * 普通用户查看他人时，响应里的 {@link User#loginName()} 可能为空字符串；管理员和查看自己
+     * 时保持可见。
+     */
+    public CompletableFuture<List<User>> listUsers() {
+        return listUsers(ListUsersFilter.empty());
+    }
+
+    /**
+     * 查询当前登录用户可通讯的活跃用户集合，并按名称过滤。
+     *
+     * @param name 可选名称过滤，服务端按大小写不敏感子串匹配
+     * @return 过滤后的用户列表
+     */
+    public CompletableFuture<List<User>> listUsers(String name) {
+        return listUsers(new ListUsersFilter(name, null));
+    }
+
+    /**
+     * 查询当前登录用户可通讯的活跃用户集合，并按 uid 精确过滤。
+     * <p>
+     * 与 HTTP 路径不同，WebSocket / protobuf 会把 {@code uid} 直接编码成
+     * {@code ListUsersRequest.uid = UserRef}。传入 {@code null} 或 {@code new UserRef(0, 0)}
+     * 时，SDK 会省略该字段，保持“不过滤 uid”的语义。
+     *
+     * @param uid 可选 uid 过滤
+     * @return 过滤后的用户列表
+     */
+    public CompletableFuture<List<User>> listUsers(UserRef uid) {
+        return listUsers(new ListUsersFilter(null, uid));
+    }
+
+    /**
+     * 查询当前登录用户可通讯的活跃用户集合，并同时应用名称和 uid 过滤。
+     *
+     * @param name 可选名称过滤
+     * @param uid  可选 uid 过滤
+     * @return 过滤后的用户列表
+     */
+    public CompletableFuture<List<User>> listUsers(String name, UserRef uid) {
+        return listUsers(new ListUsersFilter(name, uid));
+    }
+
+    /**
+     * 查询当前登录用户可通讯的活跃用户集合，并应用统一过滤对象。
+     * <p>
+     * SDK 会在本地验证 {@code uid}：全零 UserRef 表示“不按 uid 过滤”，半空坐标会抛出
+     * {@link IllegalArgumentException}，避免发出服务端必然拒绝的非法 protobuf 请求。
+     *
+     * @param filter 可选过滤条件；为 {@code null} 时视为无过滤
+     * @return 过滤后的用户列表
+     */
+    @SuppressWarnings("unchecked")
+    public CompletableFuture<List<User>> listUsers(ListUsersFilter filter) {
+        ListUsersFilter normalized = normalizeListUsersFilter(filter);
+        Validation.validateOptionalUserRef(normalized.uid(), "filter.uid");
+        return rpc(
+            requestId -> {
+                Client.ListUsersRequest.Builder builder = Client.ListUsersRequest.newBuilder()
+                    .setRequestId(requestId);
+                String name = normalizeOptionalQueryValue(normalized.name());
+                if (name != null) {
+                    builder.setName(name);
+                }
+                if (!Validation.isZeroUserRef(normalized.uid())) {
+                    builder.setUid(ProtoAdapters.toProto(normalized.uid()));
+                }
+                return Client.ClientEnvelope.newBuilder().setListUsers(builder.build()).build();
+            },
+            value -> (List<User>) requireType(value, List.class, "missing items in list_users_response")
+        );
+    }
+
     public CompletableFuture<Attachment> upsertAttachment(UserRef owner, UserRef subject, AttachmentType attachmentType, byte[] configJson) {
         Validation.validateUserRef(owner, "owner");
         Validation.validateUserRef(subject, "subject");
@@ -825,6 +901,18 @@ public class TurntfClient {
         return input == null || input.isZero() || input.isNegative() ? fallback : input;
     }
 
+    private static ListUsersFilter normalizeListUsersFilter(ListUsersFilter filter) {
+        return filter == null ? ListUsersFilter.empty() : filter;
+    }
+
+    private static String normalizeOptionalQueryValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
     private static <T> T requireType(Object value, Class<T> type, String message) {
         if (!type.isInstance(value)) {
             throw new ProtocolError(message);
@@ -1015,6 +1103,7 @@ public class TurntfClient {
                     case GET_USER_RESPONSE -> completePending(Validation.requireUnsigned(env.getGetUserResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getGetUserResponse().getUser()));
                     case UPDATE_USER_RESPONSE -> completePending(Validation.requireUnsigned(env.getUpdateUserResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getUpdateUserResponse().getUser()));
                     case DELETE_USER_RESPONSE -> completePending(Validation.requireUnsigned(env.getDeleteUserResponse().getRequestId(), "request_id"), ProtoAdapters.deleteUserResult(env.getDeleteUserResponse()));
+                    case LIST_USERS_RESPONSE -> completePending(Validation.requireUnsigned(env.getListUsersResponse().getRequestId(), "request_id"), ProtoAdapters.users(env.getListUsersResponse().getItemsList()));
                     case GET_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getGetUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getGetUserMetadataResponse().getMetadata()));
                     case UPSERT_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getUpsertUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getUpsertUserMetadataResponse().getMetadata()));
                     case DELETE_USER_METADATA_RESPONSE -> completePending(Validation.requireUnsigned(env.getDeleteUserMetadataResponse().getRequestId(), "request_id"), ProtoAdapters.fromProto(env.getDeleteUserMetadataResponse().getMetadata()));

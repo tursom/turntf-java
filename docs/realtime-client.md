@@ -132,6 +132,38 @@ new Credentials("alice.login", PasswordInput.plain("alice-password"))
 - 登录名模式与旧 ID 模式可以共用同一个 `Credentials` 类型，而不需要切换另一套配置对象
 - 如果你的上层系统已经管理了 bcrypt，不需要再次哈希
 
+## `list_users` 与可通讯用户列表
+
+实时客户端新增了 `TurntfClient.listUsers(...)`，对应服务端的 `list_users` protobuf RPC。它和
+HTTP `GET /users` 保持同一套业务语义：返回“当前登录用户可通讯的活跃用户集合”，并支持：
+
+- `name`：大小写不敏感子串匹配
+- `uid`：`UserRef` 精确过滤
+
+Java SDK 暴露统一的 `ListUsersFilter`：
+
+```java
+List<User> contacts = client.listUsers(new ListUsersFilter(
+    "carol",
+    new UserRef(4096, 1027)
+)).join();
+```
+
+这里需要特别区分两种 wire 形态：
+
+- HTTP `TurntfHttpClient.listUsers(...)` 会把 `uid` 编码成 `node_id:user_id` 查询字符串
+- WebSocket `TurntfClient.listUsers(...)` 会把 `uid` 直接编码到 protobuf `UserRef`
+
+SDK 会在发包前执行同一套校验：
+
+- `uid == null` 或 `uid == new UserRef(0, 0)` 表示“不按 uid 过滤”
+- 半空 uid 会抛 `IllegalArgumentException`
+
+返回结果里的 `User.loginName()` 也要按服务端可见性理解：
+
+- 管理员或查看自己时，`loginName` 保持可见
+- 普通用户查看其他联系人时，`loginName` 可能为空字符串
+
 ## `CursorStore`
 
 `CursorStore` 是 turntf 可靠重连语义在 Java 侧的落点：

@@ -63,6 +63,7 @@ dependencies {
 
 ```java
 import io.github.tursom.turntf.java.CreateUserRequest;
+import io.github.tursom.turntf.java.ListUsersFilter;
 import io.github.tursom.turntf.java.PasswordInput;
 import io.github.tursom.turntf.java.TurntfHttpClient;
 import io.github.tursom.turntf.java.UserRef;
@@ -87,6 +88,12 @@ var alice = http.createUser(adminToken, new CreateUserRequest(
 
 // 查询用户消息列表
 var inbox = http.listMessages(adminToken, new UserRef(alice.nodeId(), alice.userId()), 20);
+
+// 查询当前用户可通讯的活跃用户，支持 name / uid 过滤
+var contacts = http.listUsers(aliceToken, new ListUsersFilter(
+    "alice",
+    new UserRef(alice.nodeId(), alice.userId())
+));
 
 // 发送消息（body 为原始字节）
 var created = http.postMessage(adminToken, new UserRef(alice.nodeId(), alice.userId()),
@@ -184,6 +191,7 @@ Config config = new Config(
 | 登录 | `login(long, long, String)` / `login(String, String)` | 旧版 nodeId+userId 或新版 loginName 登录 |
 | 登录 | `loginWithPassword(long, long, PasswordInput)` / `loginWithPassword(String, PasswordInput)` | 支持传入预哈希密码 |
 | 用户管理 | `createUser(String, CreateUserRequest)` / `createChannel(String, CreateUserRequest)` | 创建用户/频道 |
+| 用户管理 | `listUsers(String, ...)` / `listUsers(String, ListUsersFilter)` | 查询当前用户可通讯的活跃用户，支持 `name` / `uid` 过滤 |
 | 订阅 | `createSubscription(String, UserRef, UserRef)` | 创建用户-频道订阅 |
 | 消息 | `listMessages(String, UserRef, int)` / `postMessage(String, UserRef, byte[])` | 查询/发送消息 |
 | 数据包 | `postPacket(String, long, UserRef, byte[], DeliveryMode)` | 发送瞬态中继包 |
@@ -199,7 +207,7 @@ Config config = new Config(
 | 生命周期 | `connect()` / `close()` / `currentLogin()` / `ping()` | `CompletableFuture<Void>` / `Optional<LoginInfo>` |
 | 消息收发 | `sendMessage(SendMessageInput)` / `postMessage(SendMessageInput)` | `CompletableFuture<Message>` |
 | 数据包 | `sendPacket(SendPacketInput)` / `sendPacketToSession(...)` | `CompletableFuture<RelayAccepted>` |
-| 用户管理 | `createUser(CreateUserRequest)` / `createChannel(CreateUserRequest)` / `getUser(UserRef)` / `updateUser(UserRef, UpdateUserRequest)` / `deleteUser(UserRef)` | `CompletableFuture<User>` / `CompletableFuture<DeleteUserResult>` |
+| 用户管理 | `createUser(CreateUserRequest)` / `createChannel(CreateUserRequest)` / `getUser(UserRef)` / `updateUser(UserRef, UpdateUserRequest)` / `deleteUser(UserRef)` / `listUsers(...)` | `CompletableFuture<User>` / `CompletableFuture<DeleteUserResult>` / `CompletableFuture<List<User>>` |
 | 频道订阅 | `subscribeChannel(...)` / `unsubscribeChannel(...)` / `listSubscriptions(...)` / `createSubscription(...)` | `CompletableFuture<Subscription>` / `CompletableFuture<Void>` |
 | 附件 | `upsertAttachment(...)` / `deleteAttachment(...)` / `listAttachments(...)` | `CompletableFuture<Attachment>` / `CompletableFuture<List<Attachment>>` |
 | 黑名单 | `blockUser(...)` / `unblockUser(...)` / `listBlockedUsers(...)` | `CompletableFuture<BlacklistEntry>` / `CompletableFuture<List<BlacklistEntry>>` |
@@ -224,6 +232,7 @@ Config config = new Config(
 
 - HTTP 客户端覆盖登录、创建用户、消息查询/发送、附件与黑名单管理、部分集群查询和元数据管理
 - WebSocket 客户端承载了更完整的业务 RPC，包括 `resolveUserSessions()`、`operationsStatus()`、`metrics()`、`listEvents()` 等
+- 两条路径现在都支持“可通讯用户列表”查询：HTTP 使用 `name` + `uid=node_id:user_id` 查询串，WebSocket `list_users` 使用 `name` + `uid: UserRef`
 - 如果你需要按 `session_ref` 定向投递 transient packet，应优先使用 `TurntfClient`
 
 ## 文档导航

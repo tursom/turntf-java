@@ -113,6 +113,14 @@ public final class ProtoAdapters {
         );
     }
 
+    public static List<User> users(List<Client.User> items) {
+        List<User> out = new ArrayList<>(items.size());
+        for (Client.User item : items) {
+            out.add(fromProto(item));
+        }
+        return out;
+    }
+
     public static Packet fromProto(Client.Packet input) {
         return new Packet(
             // packet_id is the only stable identifier a transient sender gets back, so reject

@@ -79,6 +79,7 @@ String token = http.loginWithPassword(4096, 1, PasswordInput.hashed("$2a$10$..."
 |-----------|-----------|------|
 | `createUser()` | `POST /users` | 创建用户 |
 | `createChannel()` | `POST /users`（role=channel） | 创建频道 |
+| `listUsers()` | `GET /users` | 查询当前用户可通讯的活跃用户，支持 `name` / `uid` 过滤 |
 
 ### 消息
 
@@ -184,6 +185,27 @@ Message sent = http.postMessage(token, recipient, "Hello!".getBytes(StandardChar
 // 查询消息
 List<Message> inbox = http.listMessages(token, recipient, 20);
 ```
+
+### 可通讯用户列表
+
+`GET /users` 现在返回的是“当前用户可通讯的活跃用户集合”，不是系统全量用户。Java SDK 对应的
+`TurntfHttpClient.listUsers(...)` 暴露了两类过滤条件：
+
+- `name`：服务端按大小写不敏感子串匹配
+- `uid`：Java 侧继续使用 `UserRef`，SDK 会在 HTTP 层自动编码为 `node_id:user_id`
+
+```java
+List<User> contacts = http.listUsers(token, new ListUsersFilter(
+    "carol",
+    new UserRef(4096, 1027)
+));
+```
+
+需要注意：
+
+- `uid == null` 或 `uid == new UserRef(0, 0)` 表示不按 uid 过滤
+- 半空 uid（例如 `new UserRef(4096, 0)`）会在 SDK 侧直接抛 `IllegalArgumentException`
+- 普通用户看到他人时，`User.loginName()` 可能为空字符串；这是服务端按可见性规则做的脱敏
 
 ### 附件管理
 

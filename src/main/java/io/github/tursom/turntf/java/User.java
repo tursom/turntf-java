@@ -17,7 +17,8 @@ package io.github.tursom.turntf.java;
  * @param createdAt      用户创建时间戳（由服务器返回）
  * @param updatedAt      用户最后更新时间戳（由服务器返回）
  * @param originNodeId   创建此用户记录的源节点标识
- * @param loginName      可选的登录名别名，用于用户名/密码方式登录
+ * @param loginName      可选的登录名别名，用于用户名/密码方式登录；调用可通讯用户列表接口时，
+ *                       普通用户查看他人可能收到空字符串，表示服务端已按可见性规则隐藏该字段
  */
 public record User(
     long nodeId,

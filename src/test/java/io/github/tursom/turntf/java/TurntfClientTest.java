@@ -17,8 +17,124 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class TurntfClientTest {
+    @Test
+    void listUsersRpcSupportsFiltersAndVisibility() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            server.enqueue(new MockResponse().withWebSocketUpgrade(new WebSocketListener() {
+                @Override
+                public void onMessage(WebSocket webSocket, okio.ByteString bytes) {
+                    try {
+                        Client.ClientEnvelope env = Client.ClientEnvelope.parseFrom(bytes.toByteArray());
+                        switch (env.getBodyCase()) {
+                            case LOGIN -> webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                .setLoginResponse(Client.LoginResponse.newBuilder()
+                                    .setUser(Client.User.newBuilder()
+                                        .setNodeId(4096)
+                                        .setUserId(1025)
+                                        .setUsername("alice")
+                                        .setRole("user")
+                                        .setLoginName("alice.login")
+                                        .build())
+                                    .setProtocolVersion("client-v1alpha1")
+                                    .setSessionRef(Client.SessionRef.newBuilder().setServingNodeId(4096).setSessionId("session-list-users").build())
+                                    .build())
+                                .build().toByteArray()));
+                            case LIST_USERS -> {
+                                if (env.getListUsers().getRequestId() == 1) {
+                                    assertFalse(env.getListUsers().hasUid());
+                                    assertEquals("carol", env.getListUsers().getName());
+                                    webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                        .setListUsersResponse(Client.ListUsersResponse.newBuilder()
+                                            .setRequestId(env.getListUsers().getRequestId())
+                                            .addItems(Client.User.newBuilder()
+                                                .setNodeId(4096)
+                                                .setUserId(1027)
+                                                .setUsername("carol")
+                                                .setRole("user")
+                                                .build())
+                                            .setCount(1)
+                                            .build())
+                                        .build().toByteArray()));
+                                } else if (env.getListUsers().getRequestId() == 2) {
+                                    assertTrue(env.getListUsers().hasUid());
+                                    assertEquals(4096, env.getListUsers().getUid().getNodeId());
+                                    assertEquals(1027, env.getListUsers().getUid().getUserId());
+                                    assertEquals("carol", env.getListUsers().getName());
+                                    webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                        .setListUsersResponse(Client.ListUsersResponse.newBuilder()
+                                            .setRequestId(env.getListUsers().getRequestId())
+                                            .addItems(Client.User.newBuilder()
+                                                .setNodeId(4096)
+                                                .setUserId(1027)
+                                                .setUsername("carol")
+                                                .setRole("user")
+                                                .build())
+                                            .setCount(1)
+                                            .build())
+                                        .build().toByteArray()));
+                                } else {
+                                    assertFalse(env.getListUsers().hasUid());
+                                    assertEquals("", env.getListUsers().getName());
+                                    webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                                        .setListUsersResponse(Client.ListUsersResponse.newBuilder()
+                                            .setRequestId(env.getListUsers().getRequestId())
+                                            .addItems(Client.User.newBuilder()
+                                                .setNodeId(4096)
+                                                .setUserId(1025)
+                                                .setUsername("alice")
+                                                .setRole("user")
+                                                .setLoginName("alice.login")
+                                                .build())
+                                            .addItems(Client.User.newBuilder()
+                                                .setNodeId(4096)
+                                                .setUserId(1027)
+                                                .setUsername("carol")
+                                                .setRole("user")
+                                                .build())
+                                            .setCount(2)
+                                            .build())
+                                        .build().toByteArray()));
+                                    webSocket.close(1000, "done");
+                                }
+                            }
+                            default -> {
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            }));
+            server.start();
+
+            TurntfClient client = new TurntfClient(new Config(
+                server.url("/").toString(),
+                new Credentials(4096, 1025, PasswordInput.plain("alice-password"))
+            ));
+
+            client.connect().join();
+
+            List<User> byName = client.listUsers("  carol  ").join();
+            assertEquals(1, byName.size());
+            assertEquals("carol", byName.get(0).username());
+            assertEquals("", byName.get(0).loginName());
+
+            List<User> combined = client.listUsers(new ListUsersFilter("carol", new UserRef(4096, 1027))).join();
+            assertEquals(1, combined.size());
+            assertEquals("carol", combined.get(0).username());
+
+            List<User> all = client.listUsers().join();
+            assertEquals(2, all.size());
+            assertEquals("alice.login", all.get(0).loginName());
+            assertEquals("", all.get(1).loginName());
+
+            assertThrows(IllegalArgumentException.class, () -> client.listUsers(new UserRef(4096, 0)));
+            client.close();
+        }
+    }
+
     @Test
     void loginAckSendMetadataAndPing() throws Exception {
         try (MockWebServer server = new MockWebServer()) {
