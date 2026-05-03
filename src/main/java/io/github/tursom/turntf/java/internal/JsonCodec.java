@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.util.RawValue;
 import io.github.tursom.turntf.java.Attachment;
 import io.github.tursom.turntf.java.AttachmentType;
 import io.github.tursom.turntf.java.BlacklistEntry;
@@ -16,9 +17,11 @@ import io.github.tursom.turntf.java.LoggedInUser;
 import io.github.tursom.turntf.java.Message;
 import io.github.tursom.turntf.java.OperationsStatus;
 import io.github.tursom.turntf.java.Subscription;
+import io.github.tursom.turntf.java.UpsertUserMetadataRequest;
 import io.github.tursom.turntf.java.User;
 import io.github.tursom.turntf.java.UserMetadata;
 import io.github.tursom.turntf.java.UserMetadataScanResult;
+import io.github.tursom.turntf.java.UserMetadataTypedValue;
 import io.github.tursom.turntf.java.UserRef;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -177,6 +180,7 @@ public final class JsonCodec {
             userRef(node.path("owner")),
             text(node, "key"),
             bytesValue(node, "value"),
+            userMetadataTypedValue(node.path("typed_value")),
             text(node, "updated_at"),
             text(node, "deleted_at"),
             text(node, "expires_at"),
@@ -262,6 +266,84 @@ public final class JsonCodec {
         List<UserMetadata> items = userMetadataItems(node);
         int count = node.isArray() ? items.size() : (node.has("count") ? intValue(node, "count") : items.size());
         return new UserMetadataScanResult(items, count, text(node, "next_after"));
+    }
+
+    public static ObjectNode userMetadataUpsertRequest(UpsertUserMetadataRequest request) {
+        ObjectNode payload = object();
+        if (request.typedValue() != null) {
+            payload.set("typed_value", userMetadataTypedValueNode(request.typedValue()));
+        } else {
+            payload.put("value", request.value() == null ? new byte[0] : request.value());
+        }
+        if (request.expiresAt() != null) {
+            payload.put("expires_at", request.expiresAt());
+        }
+        return payload;
+    }
+
+    public static UserMetadataTypedValue userMetadataTypedValue(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        UserMetadataTypedValue.Kind kind = UserMetadataTypedValue.Kind.fromWireName(text(node, "kind"));
+        return switch (kind) {
+            case BYTES -> UserMetadataTypedValue.bytes(bytesValue(node, "bytes_value"));
+            case BOOL -> new UserMetadataTypedValue(kind, null, boolField(node, "bool_value"), null, null, null);
+            case STRING -> UserMetadataTypedValue.string(requiredText(node, "string_value"));
+            case NUMBER -> UserMetadataTypedValue.number(requiredJsonNode(node, "number_value").toString());
+            case JSON -> UserMetadataTypedValue.json(jsonBytes(node.path("json_value"), "json_value"));
+        };
+    }
+
+    private static ObjectNode userMetadataTypedValueNode(UserMetadataTypedValue typedValue) {
+        ObjectNode node = object();
+        node.put("kind", typedValue.kind().wireName());
+        switch (typedValue.kind()) {
+            case BYTES -> node.put("bytes_value", typedValue.bytesValue());
+            case BOOL -> node.put("bool_value", typedValue.boolValue());
+            case STRING -> node.put("string_value", typedValue.stringValue());
+            case NUMBER -> {
+                Validation.parseMetadataNumberLiteral(typedValue.numberValue(), "typedValue.numberValue");
+                node.putRawValue("number_value", new RawValue(typedValue.numberValue()));
+            }
+            case JSON -> node.set("json_value", Validation.parseMetadataJsonValue(typedValue.jsonValue(), "typedValue.jsonValue"));
+        }
+        return node;
+    }
+
+    private static Boolean boolField(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        return value.booleanValue();
+    }
+
+    private static String requiredText(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        return value.asText();
+    }
+
+    private static JsonNode requiredJsonNode(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        if (value.isMissingNode() || value.isNull()) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        return value;
+    }
+
+    private static byte[] jsonBytes(JsonNode node, String field) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        try {
+            return MAPPER.writeValueAsBytes(node);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("invalid json field " + field, e);
+        }
     }
 
     public static List<ClusterNode> clusterNodes(JsonNode node) {

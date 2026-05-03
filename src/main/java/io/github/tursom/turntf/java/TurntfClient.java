@@ -506,7 +506,12 @@ public class TurntfClient {
     }
 
     /**
-     * Reads a single private metadata entry for the given user through the websocket RPC channel.
+     * Reads a single metadata entry for the given owner through the websocket RPC channel.
+     *
+     * <p>Realtime protobuf keeps metadata as raw bytes only. The returned
+     * {@link UserMetadata#typedValue()} therefore always stays {@code null}; callers that need the
+     * HTTP {@code typed_value} view should use {@link #http()} and
+     * {@link TurntfHttpClient#getUserMetadata(String, UserRef, String)} instead.
      */
     public CompletableFuture<UserMetadata> getUserMetadata(UserRef owner, String key) {
         Validation.validateUserRef(owner, "owner");
@@ -524,15 +529,20 @@ public class TurntfClient {
     }
 
     /**
-     * Creates or replaces a private metadata entry for the given user.
+     * Creates or replaces a metadata entry for the given owner through websocket/protobuf raw
+     * bytes.
      *
      * <p>The protobuf schema carries {@code expires_at} as an optional nested string field so the
      * client can distinguish between "server chooses default" and an explicit timestamp when the
-     * protocol evolves. Today both HTTP and websocket paths expose that as a nullable string.
+     * protocol evolves. Unlike HTTP JSON, realtime protobuf has no {@code typed_value} field, so
+     * callers must provide the final raw bytes directly. This is also why
+     * {@code system.visible_to_others} should be sent as the UTF-8 bytes of {@code true} or
+     * {@code false}.
      */
     public CompletableFuture<UserMetadata> upsertUserMetadata(UserRef owner, String key, byte[] value, String expiresAt) {
         Validation.validateUserRef(owner, "owner");
         Validation.validateUserMetadataKey(key, "key");
+        Validation.validateUpsertUserMetadataRequest(key, new UpsertUserMetadataRequest(value == null ? new byte[0] : value, expiresAt), "request");
         return rpc(
             requestId -> {
                 Client.UpsertUserMetadataRequest.Builder builder = Client.UpsertUserMetadataRequest.newBuilder()
@@ -557,7 +567,7 @@ public class TurntfClient {
     }
 
     /**
-     * Deletes a private metadata entry and returns the tombstone echoed by the server.
+     * Deletes a metadata entry and returns the tombstone echoed by the server.
      */
     public CompletableFuture<UserMetadata> deleteUserMetadata(UserRef owner, String key) {
         Validation.validateUserRef(owner, "owner");
@@ -575,9 +585,10 @@ public class TurntfClient {
     }
 
     /**
-     * Scans private metadata keys in ascending order.
+     * Scans metadata keys in ascending order through websocket/protobuf.
      *
-     * <p>{@code limit == 0} keeps the server-side default page size.
+     * <p>{@code limit == 0} keeps the server-side default page size. Returned items still expose
+     * raw bytes only; websocket/protobuf never carries the HTTP {@code typed_value} view.
      */
     public CompletableFuture<UserMetadataScanResult> scanUserMetadata(UserRef owner, String prefix, String after, int limit) {
         Validation.validateUserRef(owner, "owner");

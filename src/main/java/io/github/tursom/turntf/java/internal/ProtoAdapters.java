@@ -203,12 +203,16 @@ public final class ProtoAdapters {
 
     public static UserMetadata fromProto(Client.UserMetadata input) {
         if (input == null) {
-            return new UserMetadata(new UserRef(0, 0), "", new byte[0], "", "", "", 0);
+            return new UserMetadata(new UserRef(0, 0), "", new byte[0], null, "", "", "", 0);
         }
         return new UserMetadata(
             fromProto(input.getOwner()),
             input.getKey(),
             input.getValue().toByteArray(),
+            // websocket/protobuf metadata intentionally stays raw-byte-only. The HTTP-only
+            // typed_value projection is added later by JsonCodec when the source transport is
+            // JSON.
+            null,
             input.getUpdatedAt(),
             input.getDeletedAt(),
             input.getExpiresAt(),

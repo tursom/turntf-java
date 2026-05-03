@@ -396,10 +396,14 @@ public class TurntfHttpClient {
     }
 
     /**
-     * 读取指定用户的单条私有元数据条目。
+     * 读取指定 owner 的单条元数据条目。
+     * <p>
+     * owner 现在可以是普通用户、管理员、超级管理员或频道；系统保留用户仍然不允许拥有 metadata。
+     * 当服务端能稳定解释原始字节时，返回值会额外填充 {@link UserMetadata#typedValue()}。
+     * 例如 {@code system.visible_to_others=false} 会回显为布尔 typed_value。
      *
      * @param token 认证令牌
-     * @param owner 元数据所属的用户引用
+     * @param owner 元数据所属者；如果 owner 是频道，则读权限由服务端按 channel_manager/管理员规则校验
      * @param key   元数据的键名
      * @return 元数据条目
      */
@@ -410,27 +414,58 @@ public class TurntfHttpClient {
     }
 
     /**
-     * 创建或替换指定用户的私有元数据条目（带过期时间）。
+     * 创建或替换指定 owner 的元数据条目。
      * <p>
-     * HTTP API 在 JSON 内部将 {@code value} 表示为 Base64 编码，
-     * 而 Java 接口保持为原始字节，使调用方可以共享与 WebSocket 客户端相同的模型。
+     * 这是 HTTP metadata 的完整写入入口：请求可以在原始 {@code value} 与结构化
+     * {@code typed_value} 之间二选一。返回值始终包含 {@link UserMetadata#value()} 原始字节，
+     * 只有当服务端能稳定解释时才会额外填充 {@link UserMetadata#typedValue()}。
+     * <p>
+     * 需要注意，WebSocket/protobuf 路径没有 {@code typed_value} 字段。如果你要通过实时客户端
+     * 写 metadata，请继续使用 {@link TurntfClient#upsertUserMetadata(UserRef, String, byte[], String)}
+     * 的原始字节接口。
      *
-     * @param token      认证令牌
-     * @param owner      元数据所属的用户引用
-     * @param key        元数据的键名
-     * @param value      元数据的值（原始字节），如果为 {@code null} 则写入空数组
-     * @param expiresAt  过期时间字符串；如果为 {@code null} 则表示永不过期
+     * @param token   认证令牌
+     * @param owner   元数据所属者；频道 owner 需要服务端额外校验 channel_manager 或管理员权限
+     * @param key     元数据的键名
+     * @param request HTTP metadata 写入请求；必须在 raw {@code value} 与 {@code typedValue} 之间二选一
+     * @return 创建或更新后的元数据条目
+     */
+    public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, UpsertUserMetadataRequest request) {
+        Validation.validateUserRef(owner, "owner");
+        Validation.validateUserMetadataKey(key, "key");
+        Validation.validateUpsertUserMetadataRequest(key, request, "request");
+        return JsonCodec.userMetadata(doJson("PUT", metadataPath(owner, key), token, JsonCodec.userMetadataUpsertRequest(request), 200, 201));
+    }
+
+    /**
+     * 创建或替换指定 owner 的元数据条目（原始字节写法，兼容旧接口）。
+     * <p>
+     * 该重载始终走 HTTP JSON 的 {@code value} 字段，适合需要与 WebSocket/protobuf raw bytes
+     * 语义保持一致的调用方。
+     *
+     * @param token     认证令牌
+     * @param owner     元数据所属者
+     * @param key       元数据的键名
+     * @param value     元数据的值（原始字节），如果为 {@code null} 则写入空数组
+     * @param expiresAt 过期时间字符串；如果为 {@code null} 则表示永不过期
      * @return 创建或更新后的元数据条目
      */
     public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, byte[] value, String expiresAt) {
-        Validation.validateUserRef(owner, "owner");
-        Validation.validateUserMetadataKey(key, "key");
-        ObjectNode payload = JsonCodec.object();
-        payload.put("value", value == null ? new byte[0] : value);
-        if (expiresAt != null) {
-            payload.put("expires_at", expiresAt);
-        }
-        return JsonCodec.userMetadata(doJson("PUT", metadataPath(owner, key), token, payload, 200, 201));
+        return upsertUserMetadata(token, owner, key, new UpsertUserMetadataRequest(value, expiresAt));
+    }
+
+    /**
+     * 创建或替换指定 owner 的元数据条目（typed_value 写法）。
+     *
+     * @param token      认证令牌
+     * @param owner      元数据所属者
+     * @param key        元数据的键名
+     * @param typedValue HTTP typed_value 视图
+     * @param expiresAt  过期时间字符串；如果为 {@code null} 则表示永不过期
+     * @return 创建或更新后的元数据条目
+     */
+    public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, UserMetadataTypedValue typedValue, String expiresAt) {
+        return upsertUserMetadata(token, owner, key, new UpsertUserMetadataRequest(typedValue, expiresAt));
     }
 
     /**
@@ -447,12 +482,19 @@ public class TurntfHttpClient {
     }
 
     /**
-     * 删除指定用户的私有元数据条目。
+     * 创建或替换指定 owner 的元数据条目（typed_value 写法，无过期时间）。
+     */
+    public UserMetadata upsertUserMetadata(String token, UserRef owner, String key, UserMetadataTypedValue typedValue) {
+        return upsertUserMetadata(token, owner, key, typedValue, null);
+    }
+
+    /**
+     * 删除指定 owner 的元数据条目。
      * <p>
      * 服务器会返回已删除（标记为墓碑）的记录作为回显。
      *
      * @param token 认证令牌
-     * @param owner 元数据所属的用户引用
+     * @param owner 元数据所属者；如果 owner 是频道，则删除权限由服务端按 channel_manager/管理员规则校验
      * @param key   要删除的元数据键名
      * @return 已删除的元数据条目（由服务器回显）
      */
@@ -463,16 +505,17 @@ public class TurntfHttpClient {
     }
 
     /**
-     * 按升序遍历用户私有元数据键空间（支持分页）。
+     * 按升序遍历 owner 的 metadata 键空间（支持分页）。
      * <p>
      * {@code prefix} 和 {@code after} 是可选的游标过滤器。
      * 当 {@code limit == 0} 时，分页大小由服务器默认值决定。
      * <p>
      * 返回结果中的 {@link UserMetadataScanResult#nextAfter()} 值可作为下一次查询的 {@code after} 参数传入，
-     * 以获取下一页数据。
+     * 以获取下一页数据。HTTP 响应中的每一项仍会始终返回原始 {@code value}，并在可稳定解释时额外返回
+     * {@link UserMetadata#typedValue()}。
      *
      * @param token  认证令牌
-     * @param owner  元数据所属的用户引用
+     * @param owner  元数据所属者；频道 owner 需要服务端额外校验 channel_manager 或管理员权限
      * @param prefix 可选的前缀过滤条件，只返回键名以此前缀开头的条目；为 {@code null} 或空则不限制
      * @param after  可选的游标参数，只返回键名在此之后的条目；为 {@code null} 或空则从头开始
      * @param limit  每页最大条目数；{@code 0} 表示使用服务器默认值

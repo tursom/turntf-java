@@ -1,15 +1,23 @@
 package io.github.tursom.turntf.java.internal;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import io.github.tursom.turntf.java.DeliveryMode;
+import io.github.tursom.turntf.java.UpsertUserMetadataRequest;
 import io.github.tursom.turntf.java.ProtocolError;
 import io.github.tursom.turntf.java.SessionRef;
+import io.github.tursom.turntf.java.UserMetadataTypedValue;
 import io.github.tursom.turntf.java.UserRef;
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 
 public final class Validation {
     private static final int USER_METADATA_KEY_MAX_LENGTH = 128;
     private static final int MAX_USER_METADATA_SCAN_LIMIT = 1000;
+    public static final String USER_METADATA_SYSTEM_PREFIX = "system.";
+    public static final String USER_METADATA_VISIBLE_TO_OTHERS_KEY = "system.visible_to_others";
 
     private Validation() {
     }
@@ -84,6 +92,7 @@ public final class Validation {
 
     public static void validateUserMetadataKey(String key, String field) {
         validateUserMetadataKeyFragment(key, field, false);
+        validateKnownSystemUserMetadataKey(key, field);
     }
 
     public static void validateUserMetadataKeyFragment(String value, String field, boolean allowEmpty) {
@@ -114,6 +123,8 @@ public final class Validation {
     public static void validateUserMetadataScan(String prefix, String after, int limit) {
         validateUserMetadataKeyFragment(prefix, "prefix", true);
         validateUserMetadataKeyFragment(after, "after", true);
+        validateKnownSystemUserMetadataPrefix(prefix, "prefix");
+        validateKnownSystemUserMetadataPrefix(after, "after");
         if (limit < 0) {
             throw new IllegalArgumentException("limit must be positive");
         }
@@ -123,6 +134,124 @@ public final class Validation {
         if (prefix != null && !prefix.isEmpty() && after != null && !after.isEmpty() && !after.startsWith(prefix)) {
             throw new IllegalArgumentException("after must use the same prefix");
         }
+    }
+
+    /**
+     * HTTP metadata 写入有一个新的 value/typed_value 二选一边界，且 system key 还叠加了值类型与 TTL
+     * 约束。这里集中校验，避免把显然非法的 JSON 形状发给服务端。
+     */
+    public static void validateUpsertUserMetadataRequest(String key, UpsertUserMetadataRequest request, String field) {
+        if (request == null) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        validateKnownSystemUserMetadataKey(key, "key");
+        if (request.typedValue() != null) {
+            validateUserMetadataTypedValue(request.typedValue(), field + ".typedValue");
+            if (USER_METADATA_VISIBLE_TO_OTHERS_KEY.equals(key) && request.typedValue().kind() != UserMetadataTypedValue.Kind.BOOL) {
+                throw new IllegalArgumentException("key " + key + " requires a bool typedValue");
+            }
+        } else if (USER_METADATA_VISIBLE_TO_OTHERS_KEY.equals(key) && !isBooleanMetadataValue(request.value())) {
+            throw new IllegalArgumentException("key " + key + " requires a boolean raw value");
+        }
+        if (USER_METADATA_VISIBLE_TO_OTHERS_KEY.equals(key) && request.expiresAt() != null) {
+            throw new IllegalArgumentException("key " + key + " does not allow expiresAt");
+        }
+    }
+
+    public static void validateUserMetadataTypedValue(UserMetadataTypedValue typedValue, String field) {
+        if (typedValue == null) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        switch (typedValue.kind()) {
+            case BYTES -> {
+                if (typedValue.bytesValue() == null) {
+                    throw new IllegalArgumentException(field + ".bytesValue is required");
+                }
+            }
+            case BOOL -> {
+                if (typedValue.boolValue() == null) {
+                    throw new IllegalArgumentException(field + ".boolValue is required");
+                }
+            }
+            case STRING -> {
+                if (typedValue.stringValue() == null) {
+                    throw new IllegalArgumentException(field + ".stringValue is required");
+                }
+            }
+            case NUMBER -> validateMetadataNumberLiteral(typedValue.numberValue(), field + ".numberValue");
+            case JSON -> validateMetadataJsonValue(typedValue.jsonValue(), field + ".jsonValue");
+        }
+    }
+
+    public static JsonNode parseMetadataNumberLiteral(String value, String field) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        try {
+            JsonNode node = JsonCodec.MAPPER.readTree(value);
+            if (node == null || !node.isNumber()) {
+                throw new IllegalArgumentException(field + " must be a JSON number");
+            }
+            return node;
+        } catch (IOException e) {
+            throw new IllegalArgumentException(field + " must be a JSON number", e);
+        }
+    }
+
+    public static JsonNode parseMetadataJsonValue(byte[] value, String field) {
+        if (value == null || value.length == 0) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        try {
+            JsonNode node = JsonCodec.MAPPER.readTree(value);
+            if (node == null) {
+                throw new IllegalArgumentException(field + " must contain a JSON value");
+            }
+            return node;
+        } catch (IOException e) {
+            throw new IllegalArgumentException(field + " must contain valid JSON", e);
+        }
+    }
+
+    public static boolean isSystemUserMetadataKey(String key) {
+        return key != null && key.startsWith(USER_METADATA_SYSTEM_PREFIX);
+    }
+
+    public static boolean isBooleanMetadataValue(byte[] value) {
+        if (value == null) {
+            return false;
+        }
+        String text = new String(value, StandardCharsets.UTF_8).trim();
+        return "true".equals(text) || "false".equals(text);
+    }
+
+    private static void validateMetadataNumberLiteral(String value, String field) {
+        parseMetadataNumberLiteral(value, field);
+    }
+
+    private static void validateMetadataJsonValue(byte[] value, String field) {
+        parseMetadataJsonValue(value, field);
+    }
+
+    private static void validateKnownSystemUserMetadataKey(String key, String field) {
+        if (!isSystemUserMetadataKey(key)) {
+            return;
+        }
+        if (!USER_METADATA_VISIBLE_TO_OTHERS_KEY.equals(key)) {
+            throw new IllegalArgumentException(field + " uses unsupported system metadata key " + key);
+        }
+    }
+
+    // 服务端允许 system prefix 做“前缀中的前缀”扫描，例如 prefix=system. 或 after=system.visible。
+    // SDK 本地复刻这条规则，只放行能与当前已注册 system key 命名空间重叠的值。
+    private static void validateKnownSystemUserMetadataPrefix(String value, String field) {
+        if (!isSystemUserMetadataKey(value)) {
+            return;
+        }
+        if (USER_METADATA_VISIBLE_TO_OTHERS_KEY.startsWith(value) || value.startsWith(USER_METADATA_VISIBLE_TO_OTHERS_KEY)) {
+            return;
+        }
+        throw new IllegalArgumentException(field + " uses unsupported system metadata prefix " + value);
     }
 
     public static String websocketUrl(String baseUrl, boolean realtime) {
