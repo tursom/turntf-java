@@ -282,7 +282,8 @@ public interface CursorStore {
 ### 自动重连、重登录与 session_ref
 
 - 初次 `connect()` 成功后，SDK 自动启动定时 ping
-- 断开时清空认证态、失败 pending RPC、触发 `onDisconnect()`；若 `reconnect=true` 且非鉴权错误，则按指数退避自动重连
+- 初连和重连的登录帧固定声明 `client-v1alpha5`；SDK 在发布登录状态前校验服务端确认值
+- 断开时清空认证态、失败 pending RPC、触发 `onDisconnect()`；若 `reconnect=true` 且非鉴权或协议版本终止错误，则按指数退避自动重连
 - 重连帧携带 `CursorStore.loadSeenMessages()` 快照，服务端跳过已持久化消息
 - `LoginInfo.sessionRef()` 标识当前在线会话，`sendPacketToSession()` 可定向投递
 
@@ -302,7 +303,7 @@ public interface CursorStore {
 |------|---------|------|
 | 参数校验 | `IllegalArgumentException` | 空密码、非法 `UserRef`、非法 `DeliveryMode` |
 | 网络传输 | `ConnectionError` | I/O 异常、连接失败 |
-| 协议不匹配 | `ProtocolError` | 非预期 HTTP 状态码、无效 Protobuf 帧 |
+| 协议不匹配 | `ProtocolError` | 非预期 HTTP 状态码、无效 Protobuf 帧、登录响应版本不匹配 |
 | 业务错误 | `ServerError` | 服务端返回的业务错误（含 `unauthorized()` 判断） |
 
 实时 API 需注意：`CompletableFuture.join()` 将异常包装为 `CompletionException`，业务应检查 `getCause()`。连接未就绪或已关闭时，SDK 抛出 `IllegalStateException`。

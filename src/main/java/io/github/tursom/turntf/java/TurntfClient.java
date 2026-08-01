@@ -34,6 +34,7 @@ import okhttp3.WebSocketListener;
  * durability, optional ack emission, and push delivery through {@link ClientListener}.
  */
 public class TurntfClient {
+    private static final String CLIENT_PROTOCOL_VERSION = "client-v1alpha5";
     private static final String CLOSED_MESSAGE = "turntf client is closed";
     private static final String NOT_CONNECTED_MESSAGE = "turntf client is not connected";
     private static final String DISCONNECTED_MESSAGE = "turntf websocket disconnected";
@@ -780,8 +781,8 @@ public class TurntfClient {
         if (closed || stopReconnect || !config.reconnect()) {
             return false;
         }
-        // Unauthorized is terminal for the current credentials; retrying would just hammer the
-        // server with the same login failure until the process is restarted or reconfigured.
+        // Authentication and wire-epoch failures are terminal for the current client instance;
+        // retrying cannot change either the credentials or the SDK's compiled protocol schema.
         return !(err instanceof ServerError serverError && serverError.unauthorized()) && !isClosedLike(err);
     }
 
@@ -976,7 +977,8 @@ public class TurntfClient {
             Client.ClientEnvelope.Builder envelope = Client.ClientEnvelope.newBuilder();
             Client.LoginRequest.Builder login = Client.LoginRequest.newBuilder()
                 .setPassword(config.credentials().password().wireValue())
-                .setTransientOnly(config.transientOnly());
+                .setTransientOnly(config.transientOnly())
+                .setProtocolVersion(CLIENT_PROTOCOL_VERSION);
             if (config.credentials().hasUserSelector()) {
                 login.setUser(ProtoAdapters.toProto(config.credentials().user()));
             } else {
@@ -1033,6 +1035,23 @@ public class TurntfClient {
         private void handleLoginEnvelope(WebSocket webSocket, Client.ServerEnvelope env) {
             switch (env.getBodyCase()) {
                 case LOGIN_RESPONSE -> {
+                    String got = env.getLoginResponse().getProtocolVersion();
+                    if (!CLIENT_PROTOCOL_VERSION.equals(got)) {
+                        // Historical ClientEnvelope/ServerEnvelope tags were reused for different
+                        // RPCs. A mismatched successful response therefore identifies a different
+                        // wire epoch, not a transient server condition. Stop reconnecting and fail
+                        // before publishing socket/auth/loginInfo or invoking onLogin; otherwise
+                        // later frames could be decoded as unrelated operations.
+                        ProtocolError error = new ProtocolError(
+                            "unsupported login response protocol version: got=\"" + got
+                                + "\" want=\"" + CLIENT_PROTOCOL_VERSION + "\""
+                        );
+                        stopReconnect = true;
+                        attempt.loginFuture.completeExceptionally(error);
+                        attempt.closeFuture.complete(error);
+                        webSocket.close(1002, "protocol version mismatch");
+                        return;
+                    }
                     LoginInfo info = ProtoAdapters.loginInfo(env.getLoginResponse());
                     synchronized (stateLock) {
                         TurntfClient.this.webSocket = webSocket;
@@ -1047,7 +1066,9 @@ public class TurntfClient {
                 }
                 case ERROR -> {
                     ServerError error = new ServerError(env.getError().getCode(), env.getError().getMessage(), env.getError().getRequestId());
-                    if (error.unauthorized()) {
+                    // The version constant is compiled into the SDK, so neither an explicit server
+                    // rejection nor a credential rejection can be repaired by automatic reconnect.
+                    if (error.unauthorized() || "unsupported_protocol_version".equals(error.code())) {
                         stopReconnect = true;
                     }
                     attempt.loginFuture.completeExceptionally(error);

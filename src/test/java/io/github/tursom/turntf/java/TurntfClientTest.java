@@ -1,9 +1,13 @@
 package io.github.tursom.turntf.java;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
@@ -38,7 +42,7 @@ class TurntfClientTest {
                                         .setRole("user")
                                         .setLoginName("alice.login")
                                         .build())
-                                    .setProtocolVersion("client-v1alpha1")
+                                        .setProtocolVersion("client-v1alpha5")
                                     .setSessionRef(Client.SessionRef.newBuilder().setServingNodeId(4096).setSessionId("session-list-users").build())
                                     .build())
                                 .build().toByteArray()));
@@ -166,7 +170,7 @@ class TurntfClientTest {
                                 webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
                                     .setLoginResponse(Client.LoginResponse.newBuilder()
                                         .setUser(Client.User.newBuilder().setNodeId(4096).setUserId(1025).setUsername("alice").setRole("user").build())
-                                        .setProtocolVersion("client-v1alpha1")
+                                        .setProtocolVersion("client-v1alpha5")
                                         .setSessionRef(Client.SessionRef.newBuilder().setServingNodeId(4096).setSessionId("session-a").build())
                                         .build())
                                     .build().toByteArray()));
@@ -319,7 +323,7 @@ class TurntfClientTest {
                                             .setRole("user")
                                             .setLoginName("alice.login")
                                             .build())
-                                        .setProtocolVersion("client-v1alpha1")
+                                        .setProtocolVersion("client-v1alpha5")
                                         .setSessionRef(Client.SessionRef.newBuilder().setServingNodeId(4096).setSessionId("session-login-name").build())
                                         .build())
                                     .build().toByteArray()));
@@ -409,6 +413,162 @@ class TurntfClientTest {
             assertEquals("alice.login", loggedInUsers.get(0).loginName());
             client.close();
         }
+    }
+
+    @Test
+    void initialAndReconnectLoginFramesDeclareCurrentProtocolVersion() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            List<String> versions = new CopyOnWriteArrayList<>();
+            CountDownLatch reconnected = new CountDownLatch(1);
+            AtomicInteger attempts = new AtomicInteger();
+            WebSocketListener listener = new WebSocketListener() {
+                @Override
+                public void onMessage(WebSocket webSocket, okio.ByteString bytes) {
+                    try {
+                        Client.ClientEnvelope env = Client.ClientEnvelope.parseFrom(bytes.toByteArray());
+                        if (env.getBodyCase() != Client.ClientEnvelope.BodyCase.LOGIN) {
+                            return;
+                        }
+                        versions.add(env.getLogin().getProtocolVersion());
+                        int attempt = attempts.incrementAndGet();
+                        webSocket.send(okio.ByteString.of(loginResponse("client-v1alpha5").toByteArray()));
+                        if (attempt == 1) {
+                            webSocket.close(1012, "restart");
+                        } else {
+                            reconnected.countDown();
+                        }
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                }
+            };
+            server.enqueue(new MockResponse().withWebSocketUpgrade(listener));
+            server.enqueue(new MockResponse().withWebSocketUpgrade(listener));
+            server.start();
+
+            TurntfClient client = new TurntfClient(reconnectingConfig(server, new NopClientListener()));
+            client.connect().join();
+            assertTrue(reconnected.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of("client-v1alpha5", "client-v1alpha5"), versions);
+            client.close();
+        }
+    }
+
+    @Test
+    void unsupportedProtocolServerErrorIsTerminal() throws Exception {
+        try (MockWebServer server = new MockWebServer()) {
+            List<String> versions = new CopyOnWriteArrayList<>();
+            server.enqueue(new MockResponse().withWebSocketUpgrade(new WebSocketListener() {
+                @Override
+                public void onClosing(WebSocket webSocket, int code, String reason) {
+                    webSocket.close(code, reason);
+                }
+
+                @Override
+                public void onMessage(WebSocket webSocket, okio.ByteString bytes) {
+                    try {
+                        Client.ClientEnvelope env = Client.ClientEnvelope.parseFrom(bytes.toByteArray());
+                        versions.add(env.getLogin().getProtocolVersion());
+                        webSocket.send(okio.ByteString.of(Client.ServerEnvelope.newBuilder()
+                            .setError(Client.Error.newBuilder()
+                                .setCode("unsupported_protocol_version")
+                                .setMessage("unsupported client protocol version")
+                                .setRequestId(0)
+                                .build())
+                            .build().toByteArray()));
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
+                    }
+                }
+            }));
+            server.start();
+
+            RecordingListener listener = new RecordingListener();
+            TurntfClient client = new TurntfClient(reconnectingConfig(server, listener));
+            CompletionException thrown = assertThrows(CompletionException.class, () -> client.connect().join());
+            assertTrue(thrown.getCause() instanceof ServerError);
+            assertEquals("unsupported_protocol_version", ((ServerError) thrown.getCause()).code());
+            Thread.sleep(100);
+            assertEquals(List.of("client-v1alpha5"), versions);
+            assertEquals(1, server.getRequestCount());
+            assertTrue(client.currentLogin().isEmpty());
+            assertTrue(listener.logins.isEmpty());
+            client.close();
+        }
+    }
+
+    @Test
+    void mismatchedLoginResponseVersionIsTerminalBeforeLoginPublication() throws Exception {
+        for (String version : List.of("", "client-v1alpha4")) {
+            try (MockWebServer server = new MockWebServer()) {
+                List<String> versions = new CopyOnWriteArrayList<>();
+                server.enqueue(new MockResponse().withWebSocketUpgrade(new WebSocketListener() {
+                    @Override
+                    public void onClosing(WebSocket webSocket, int code, String reason) {
+                        webSocket.close(code, reason);
+                    }
+
+                    @Override
+                    public void onMessage(WebSocket webSocket, okio.ByteString bytes) {
+                        try {
+                            Client.ClientEnvelope env = Client.ClientEnvelope.parseFrom(bytes.toByteArray());
+                            versions.add(env.getLogin().getProtocolVersion());
+                            webSocket.send(okio.ByteString.of(loginResponse(version).toByteArray()));
+                        } catch (Exception error) {
+                            throw new RuntimeException(error);
+                        }
+                    }
+                }));
+                server.start();
+
+                RecordingListener listener = new RecordingListener();
+                TurntfClient client = new TurntfClient(reconnectingConfig(server, listener));
+                CompletionException thrown = assertThrows(CompletionException.class, () -> client.connect().join());
+                assertTrue(thrown.getCause() instanceof ProtocolError);
+                Thread.sleep(100);
+                assertEquals(List.of("client-v1alpha5"), versions);
+                assertEquals(1, server.getRequestCount());
+                assertTrue(client.currentLogin().isEmpty());
+                assertTrue(listener.logins.isEmpty());
+                client.close();
+            }
+        }
+    }
+
+    private static Config reconnectingConfig(MockWebServer server, ClientListener listener) {
+        return new Config(
+            server.url("/").toString(),
+            new Credentials(4096, 1025, PasswordInput.plain("alice-password")),
+            null,
+            listener,
+            null,
+            true,
+            Duration.ofMillis(10),
+            Duration.ofMillis(20),
+            Duration.ofHours(1),
+            Duration.ofSeconds(1),
+            true,
+            false,
+            false
+        );
+    }
+
+    private static Client.ServerEnvelope loginResponse(String protocolVersion) {
+        return Client.ServerEnvelope.newBuilder()
+            .setLoginResponse(Client.LoginResponse.newBuilder()
+                .setUser(Client.User.newBuilder()
+                    .setNodeId(4096)
+                    .setUserId(1025)
+                    .setUsername("alice")
+                    .setRole("user")
+                    .build())
+                .setProtocolVersion(protocolVersion)
+                .setSessionRef(Client.SessionRef.newBuilder()
+                    .setServingNodeId(4096)
+                    .setSessionId("session-version-test")
+                    .build())
+                .build())
+            .build();
     }
 
     private static final class RecordingStore implements CursorStore {

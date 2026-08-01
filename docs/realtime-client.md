@@ -25,10 +25,11 @@
 5. 登录帧携带：
    - `Credentials` 中二选一的登录选择器：`(node_id, user_id)` 或 `login_name`
    - `Credentials` 中的 `password`
+   - SDK 内部固定的 `protocol_version = "client-v1alpha5"`，不提供配置项
    - 本地游标快照 `seen_messages`
    - `Config.transientOnly`
 6. SDK 等待首个服务端帧：
-   - 若是 `login_response`，发布 `LoginInfo`、完成 `connect()` 返回的 future、触发 `onLogin()`
+   - 若是 `login_response`，先校验服务端版本为 `client-v1alpha5`，再发布 `LoginInfo`、完成 `connect()` 返回的 future、触发 `onLogin()`
    - 若是 `error`，把它转换成 `ServerError`
    - 若既不是登录成功也不是错误，则视为协议异常 `ProtocolError`
 7. 登录成功后，SDK 开始处理：
@@ -270,8 +271,10 @@ public interface ClientListener {
 - 显式调用了 `close()`
 - `Config.reconnect = false`
 - 登录失败且错误码是 `unauthorized`
+- 登录失败且错误码是 `unsupported_protocol_version`
+- 成功响应的 `protocol_version` 为空或不是 `client-v1alpha5`
 
-`unauthorized` 被视为当前凭证的终态错误。继续重试只会反复发送同一组错误凭证，因此 SDK 会停止重连。
+`unauthorized` 是当前凭证的终态错误。版本错误则表示 SDK 与服务端使用不同的 wire epoch；历史 envelope tag 曾复用，不能安全混跑。两类错误都无法通过重拨修复，因此 SDK 会在发布登录状态前失败并停止重连。
 
 ### pending RPC 为什么会在断线时立刻失败
 

@@ -88,7 +88,7 @@ connect() 调用
     ├─ 失败所有 pending RPC
     ├─ 触发 onDisconnect()
     │
-    ├─ 如果允许重连（reconnect=true 且非 unauthorized）
+    ├─ 如果允许重连（reconnect=true 且非终止性登录错误）
     │      └─ 指数退避等待后重拨
     │
     └─ 如果不允许重连
@@ -106,6 +106,8 @@ connect() 调用
 - 显式调用 `close()`
 - `Config.reconnect = false`
 - 登录失败且错误码是 `unauthorized`（视为凭证终态错误）
+- 登录失败且错误码是 `unsupported_protocol_version`
+- `LoginResponse.protocol_version` 为空或不是 SDK 固定的 `client-v1alpha5`
 
 ---
 
